@@ -26,7 +26,7 @@ None by default.
 
 package Geo::OGC::Service::WMTS;
 
-use 5.010000; # // and //=
+use 5.010000; # say // and //=
 use feature "switch";
 use Carp;
 use File::Basename;
@@ -82,6 +82,7 @@ The entry method into this service. Fails unless the request is well known.
 
 sub process_request {
     my ($self, $responder) = @_;
+    $self->{request} = $self->{parameters}{request};
     $self->{debug} = $self->{config}{debug};
     $self->{responder} = $responder;
     if ($self->{parameters}{debug}) {
@@ -94,24 +95,15 @@ sub process_request {
             } });
         return;
     }
-    if ($self->{debug}) {
-        $self->log({ request => $self->{request}, parameters => $self->{parameters} });
-        my $parser = XML::LibXML->new(no_blanks => 1);
-        my $pp = XML::LibXML::PrettyPrint->new(indent_string => "  ");
-        if ($self->{posted}) {
-            my $dom = $parser->load_xml(string => $self->{posted});
-            $pp->pretty_print($dom); # modified in-place
-            say STDERR "posted:\n",$dom->toString;
-        }
-        if ($self->{filter}) {
-            my $dom = $parser->load_xml(string => $self->{filter});
-            $pp->pretty_print($dom); # modified in-place
-            say STDERR "filter:\n",$dom->toString;
-        }
+    if ($self->{debug} > 2) {
+        $self->log($self);
     }
-    for ($self->{request}{request} // '') {
+    my $response;
+    for ($self->{request} // '') {
         if (/^GetCapabilities/ or /^capabilities/) { $self->GetCapabilities() }
-        elsif (/^GetTile/)                         { $self->GetTile() }
+        elsif (/^GetTile/)                         { $response = $self->GetTile() }
+        elsif (/^GetMap/)                          { $response = $self->GetMap() }
+        elsif ($self->{service} eq 'TMS')          { $response = $self->TMS() }
         elsif (/^FeatureInfo/)                     { $self->FeatureInfo() }
         elsif (/^$/)                               { 
             $self->error({ exceptionCode => 'MissingParameterValue',
@@ -121,6 +113,7 @@ sub process_request {
                            locator => 'request',
                            ExceptionText => "$self->{parameters}{request} is not a known request" }) }
     }
+    $self->{responder}->($response) if $response;
 }
 
 sub GetCapabilities {
@@ -129,10 +122,11 @@ sub GetCapabilities {
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
 
     $writer->open_element(WMT_MS_Capabilities => { version => '1.1.1' });
-    $writer->element(Service => [[Name => 'OGC:WMS'],
-                                 ['Title'],
-                            [OnlineResource => {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
-                                                'xlink:href' => $my_url}]]);
+    $writer->element(Service => [
+                         [Name => 'OGC:WMS'],
+                         ['Title'],
+                         [OnlineResource => {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
+                                             'xlink:href' => $self->{config}{resource}}]]);
     $writer->open_element('Capability');
     $writer->element(Request => 
                      [[GetCapabilities => 
@@ -142,7 +136,7 @@ sub GetCapabilities {
                           [Get => 
                            [OnlineResource => 
                             {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
-                             'xlink:href' => $my_url}]]]]]],
+                             'xlink:href' => $self->{config}{resource}}]]]]]],
                       [GetMap => 
                        [[Format => 'image/png'],
                         [DCPType => 
@@ -150,11 +144,11 @@ sub GetCapabilities {
                           [Get => 
                            [OnlineResource => 
                             {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
-                             'xlink:href' => $my_url}]]]]]]
+                             'xlink:href' => $self->{config}{resource}}]]]]]]
                      ]);
     $writer->element(Exception => [Format => 'text/plain']);
     
-    for my $set (@{$config->{TileSets}}) {
+    for my $set (@{$self->{config}{TileSets}}) {
         my($i0,$i1) = split /\.\./, $set->{Resolutions};
         my @resolutions = @resolutions_3857[$i0..$i1];
         $writer->element(VendorSpecificCapabilities => 
@@ -171,12 +165,13 @@ sub GetCapabilities {
     $writer->element(UserDefinedSymbolization => 
                      {SupportSLD => 0, UserLayer => 0, UserStyle => 0, RemoteWFS => 0});
 
-    for my $set (@{$config->{TileSets}}) {
+    for my $set (@{$self->{config}{TileSets}}) {
         $writer->element(Layer => [[Title => 'TileCache Layers'],
                                    [Layer => {queryable => 0, opaque => 0, cascaded => 1}, 
                                     [[Name => $set->{Layers}],
                                      [Title => $set->{Layers}],
                                      [SRS => $set->{SRS}],
+                                     [Format => $set->{Format}],
                                      [BoundingBox => $set->{BoundingBox}]]]
                          ]);
     }
@@ -186,60 +181,181 @@ sub GetCapabilities {
     $writer->stream($self->{responder});
 }
 
-sub GetTile {
+sub GetMap {
     my ($self) = @_;
-    my ($set, $zxy, $ext);
-    my $layers = $self->{parameters}{layers};
-    ($layers, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /(\w+)\/(.*?)\.(\w+)$/ unless $layers;
-    for my $s (@{$self->{config}{TileSets}}) {
-        $set = $s, last if $s->{Layers} eq $layers;
-    }
-    $ext = $set->{ext} unless $ext;
-
-#    if ($request eq 'GetMap') {
-    {
-        my $bbox = $self->{parameters}{bbox};
-        my @bbox = split /,/, $bbox; # minx, miny, maxx, maxy
-        my $units_per_pixel = ($bbox[2]-$bbox[0])/256;
-        my $z;
-        my $res;
-        for my $r (@resolutions_3857) {
-            if (abs($r - $units_per_pixel) < 0.1) {
-                $res = $r;
-                $z = $i;
-                last;
-            }
+    for my $param (qw/bbox layers/) {
+        unless ($self->{parameters}{$param}) {
+            $self->error({ exceptionCode => 'MissingParameterValue',
+                           locator => uc($param) });
+            return;
         }
-        my $rows = 2**$z;
-
-        #my $wh = ($bounding_box_3857->{maxx} - $bounding_box_3857->{minx})/$rows;
-        #my $x = ($bbox[2]+$bbox[0])/2 - $bounding_box_3857->{minx};
-        #my $y = ($bbox[3]+$bbox[1])/2 - $bounding_box_3857->{miny};
-        #$x = int($x / $wh);
-        #$y = int($y / $wh);
-
-        my $x = int(($bbox[0] - $bounding_box_3857->{minx}) / ($res * 256) + 0.5);
-        my $y = int(($bbox[1] - $bounding_box_3857->{miny}) / ($res * 256) + 0.5);
-        $zxy = "$z/$x/$y";
     }
-#    }
+    my $set;
+    for my $s (@{$self->{config}{TileSets}}) {
+        if ($s->{Layers} eq $self->{parameters}{layers}) {
+            $set = $s;
+            last;
+        }
+    }
+    unless ($set) {
+        $self->error({ exceptionCode => 'InvalidParameterValue',
+                       locator => 'LAYERS' });
+        return;
+    }
+    
+    my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
+    my $units_per_pixel = ($bbox[2]-$bbox[0])/256;
+    my $z;
+    my $res;
+    my $i = 0;
+    for my $r (@resolutions_3857) {
+        if (abs($r - $units_per_pixel) < 0.1) {
+            $res = $r;
+            $z = $i;
+            last;
+        }
+        $i++;
+    }
+    my $rows = 2**$z;
 
-    my $file = "$set->{path}/$zxy.$ext";
+    #my $wh = ($bounding_box_3857->{maxx} - $bounding_box_3857->{minx})/$rows;
+    #my $x = ($bbox[2]+$bbox[0])/2 - $bounding_box_3857->{minx};
+    #my $y = ($bbox[3]+$bbox[1])/2 - $bounding_box_3857->{miny};
+    #$x = int($x / $wh);
+    #$y = int($y / $wh);
+    
+    my $x = int(($bbox[0] - $bounding_box_3857->{minx}) / ($res * 256) + 0.5);
+    my $y = int(($bbox[1] - $bounding_box_3857->{miny}) / ($res * 256) + 0.5);
+    
+    my $file = "$set->{path}/$z/$x/$y.$set->{ext}";
+    #say STDERR $file,"\n";
+    $file = $self->{config}{blank} unless -r $file;
 
-    open my $fh, "<:raw", $file or $self->return_403;
+    open my $fh, "<:raw", $file or return $self->return_403;
 
     my @stat = stat $file;
 
     Plack::Util::set_io_path($fh, Cwd::realpath($file));
     
-    $self->{responder}->([ 200, 
+    return [ 200, 
+             [
+              'Content-Type'   => $set->{Format},
+              'Content-Length' => $stat[7],
+              'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
+             ],
+             $fh,
+        ];
+}
+
+sub GetTile {
+    my ($self) = @_;
+    for my $param (qw/layer tilerow tilecol tilematrix tilematrixset format/) {
+        unless ($self->{parameters}{$param}) {
+            $self->error({ exceptionCode => 'MissingParameterValue',
+                           locator => $param });
+            return;
+        }
+    }
+    my $set;
+    for my $s (@{$self->{config}{TileSets}}) {
+        if ($s->{Layers} eq $self->{parameters}{layer}) {
+            $set = $s;
+            last;
+        }
+    }
+    unless ($set) {
+        $self->error({ exceptionCode => 'InvalidParameterValue',
+                       locator => 'layer' });
+        return;
+    }
+
+
+    my $layer = $self->{parameters}{layers};
+
+    # get x, y, z from tilerow tilecol tilematrix tilematrixset
+    my $x;
+    my $y;
+    my $z;
+
+    if ($self->{parameters}{tilematrixset} eq 'EPSG:3857') {
+        $z = $self->{parameters}{tilematrix};
+        $y = $self->{parameters}{tilecol};
+        $x = 2**$z-$self->{parameters}{tilerow}-1;
+    }
+    
+
+    my $file = "$set->{path}/$z/$y/$x.$set->{ext}";
+    $file = $self->{config}{blank} unless -r $file;
+    #say STDERR "$z/$y/$x ",$file;
+
+    open my $fh, "<:raw", $file or return $self->return_403;
+
+    my @stat = stat $file;
+
+    Plack::Util::set_io_path($fh, Cwd::realpath($file));
+    
+    return $self->{responder}->([ 200, 
                            [
-                            'Content-Type'   => "image/$ext",
+                            'Content-Type'   => $set->{Format},
                             'Content-Length' => $stat[7],
                             'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
                            ],
                            $fh,
                          ]);
+}
+
+sub TMS {
+    my ($self) = @_;
+    my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/; # /ilmakuvat/10/577/735.png
+    return $self->return_403 unless defined $layer;
+    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/; # /ilmakuvat/10/577/735.png
+    my $set;
+    for my $s (@{$self->{config}{TileSets}}) {
+        $set = $s, last if $s->{Layers} eq $layer;
+    }
+    return $self->return_403 unless defined $set;
+    $ext = $set->{ext} unless $ext;
+    return $self->tilemapresource($set) unless defined $zxy;
+    
+    my $file = "$set->{path}/$zxy.$ext";
+    $file = $self->{config}{blank} unless -r $file;
+
+    open my $fh, "<:raw", $file or return $self->return_403;
+
+    my @stat = stat $file;
+    
+    Plack::Util::set_io_path($fh, Cwd::realpath($file));
+    
+    $self->{responder}->([ 200, 
+                           [
+                            'Content-Type'   => 'image/'.$ext,
+                            'Content-Length' => $stat[7],
+                            'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
+                           ],
+                           $fh,
+                         ]);
+}
+
+sub tilemapresource {
+    my ($self, $set) = @_;
+    my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
+    $writer->open_element(TileMap => { version => "1.0.0", tilemapservice => "http://tms.osgeo.org/1.0.0" });
+    $writer->element(Title => $set->{Title} // $set->{Layers});
+    $writer->element(Abstract => $set->{Abstract} // '');
+    $writer->element(SRS => $set->{SRS} // 'EPSG:3857');
+    $writer->element(BoundingBox => $set->{BoundingBox});
+    $writer->element(Origin => {x => $set->{BoundingBox}{minx}, y => $set->{BoundingBox}{miny}});
+    my ($ext) = $set->{Format} =~ /(\w+)$/;
+    $writer->element(TileFormat => {width => 256, height => 256, 'mime-type' => $set->{Format}, extension => $ext });
+    my @sets;
+    my ($n, $m) = $set->{Resolutions} =~ /(\d+)\.\.(\d+)$/;
+    for my $i ($n..$m) {
+        push @sets, [TileSet => {href=>$i, order=>$i, 'units-per-pixel'=>$resolutions_3857[$i]}];
+    }
+    $writer->element(TileSets => {profile => "mercator"}, \@sets);
+    $writer->close_element;
+    $writer->stream($self->{responder});
+    return undef;
 }
 
 sub return_403 {
@@ -250,6 +366,25 @@ sub return_403 {
 sub FeatureInfo {
     my ($self) = @_;
     $self->return_403;
+}
+
+sub error {
+    my ($self, $msg) = @_;
+    if (!$msg->{debug}) {
+        Geo::OGC::Service::error($self->{responder}, $msg);
+    } else {
+        my $json = JSON->new;
+        $json->allow_blessed([1]);
+        my $writer = $self->{responder}->([200, [ 'Content-Type' => 'application/json',
+                                                  'Content-Encoding' => 'UTF-8' ]]);
+        $writer->write($json->encode($msg->{debug}));
+        $writer->close;
+    }
+}
+
+sub log {
+    my ($self, $msg) = @_;
+    say STDERR Dumper($msg);
 }
 
 1;
