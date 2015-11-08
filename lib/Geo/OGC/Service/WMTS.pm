@@ -37,6 +37,7 @@ use JSON;
 use DBI;
 use Geo::GDAL;
 use Cwd;
+use Math::Trig;
 
 use Data::Dumper;
 use XML::LibXML::PrettyPrint;
@@ -67,9 +68,9 @@ our @resolutions_3857 = (156543.03390000000945292413,
                         0.29858214168548585787);
 
 our $bounding_box_3857 = {SRS => 'EPSG:3857', 
-                         minx => -20037508.34, 
-                         miny => -20037508.34, 
-                         maxx => 20037508.34, 
+                         minx => -20037508.34,
+                         miny => -20037508.34,
+                         maxx => 20037508.34,
                          maxy => 20037508.34};
 
 =pod
@@ -150,10 +151,12 @@ sub GetCapabilities {
     
     for my $set (@{$self->{config}{TileSets}}) {
         my($i0,$i1) = split /\.\./, $set->{Resolutions};
-        my @resolutions = @resolutions_3857[$i0..$i1];
+        #my @resolutions = @resolutions_3857[$i0..$i1]; # with this QGIS starts to ask higher resolution tiles
+        my @resolutions = @resolutions_3857;
         $writer->element(VendorSpecificCapabilities => 
                          [TileSet => [[SRS => $set->{SRS}],
-                                      [BoundingBox => $set->{BoundingBox}],
+                                      #[BoundingBox => $set->{BoundingBox}], # with this QGIS does not show tiles at correct locations
+                                      [BoundingBox => $bounding_box_3857],
                                       [Resolutions => "@resolutions"],
                                       [Width => $set->{Width} || 256],
                                       [Height => $set->{Height} || 256],
@@ -172,7 +175,9 @@ sub GetCapabilities {
                                      [Title => $set->{Layers}],
                                      [SRS => $set->{SRS}],
                                      [Format => $set->{Format}],
-                                     [BoundingBox => $set->{BoundingBox}]]]
+                                     [BoundingBox => $bounding_box_3857],
+                                     #[BoundingBox => $set->{BoundingBox}] # with this QGIS does not show tiles at correct locations
+                                    ]]
                          ]);
     }
 
@@ -218,17 +223,18 @@ sub GetMap {
     }
     my $rows = 2**$z;
 
-    #my $wh = ($bounding_box_3857->{maxx} - $bounding_box_3857->{minx})/$rows;
-    #my $x = ($bbox[2]+$bbox[0])/2 - $bounding_box_3857->{minx};
-    #my $y = ($bbox[3]+$bbox[1])/2 - $bounding_box_3857->{miny};
-    #$x = int($x / $wh);
-    #$y = int($y / $wh);
-    
-    my $x = int(($bbox[0] - $bounding_box_3857->{minx}) / ($res * 256) + 0.5);
-    my $y = int(($bbox[1] - $bounding_box_3857->{miny}) / ($res * 256) + 0.5);
-    
-    my $file = "$set->{path}/$z/$x/$y.$set->{ext}";
-    #say STDERR $file,"\n";
+    # from globalmaptiles.py by Klokan Petr Pridal:
+
+    my $originShift = 2 * pi * 6378137 / 2.0;
+
+    my $px = ($bbox[0] + $originShift) / $res;
+    my $py = ($bbox[1] + $originShift) / $res;
+
+    my $tx = int( POSIX::ceil( $px / 256.0 ) - 1 );
+    my $ty = int( POSIX::ceil( $py / 256.0 ) - 1 );
+
+    my $file = "$set->{path}/$z/$tx/$ty.$set->{ext}";
+
     $file = $self->{config}{blank} unless -r $file;
 
     open my $fh, "<:raw", $file or return $self->return_403;
@@ -286,7 +292,6 @@ sub GetTile {
 
     my $file = "$set->{path}/$z/$y/$x.$set->{ext}";
     $file = $self->{config}{blank} unless -r $file;
-    #say STDERR "$z/$y/$x ",$file;
 
     open my $fh, "<:raw", $file or return $self->return_403;
 
@@ -307,7 +312,7 @@ sub GetTile {
 sub TMS {
     my ($self) = @_;
     my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/; # /ilmakuvat/10/577/735.png
-    return $self->return_403 unless defined $layer;
+    return $self->tilemaps unless defined $layer;
     my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/; # /ilmakuvat/10/577/735.png
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
@@ -334,6 +339,23 @@ sub TMS {
                            ],
                            $fh,
                          ]);
+}
+
+sub tilemaps {
+    my ($self) = @_;
+    my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
+    $writer->open_element(TileMapService => { version => "1.0.0", tilemapservice => "http://tms.osgeo.org/1.0.0" });
+    $writer->open_element(TileMaps => {});
+    for my $set (@{$self->{config}{TileSets}}) {
+        $writer->element(TileMap => {href => $self->{config}{resource}.'/'.$set->{Layers}, 
+                                     srs => $set->{SRS}, 
+                                     title => $set->{Title}, 
+                                     profile => 'none'});
+    }
+    $writer->close_element;
+    $writer->close_element;
+    $writer->stream($self->{responder});
+    return undef;
 }
 
 sub tilemapresource {
