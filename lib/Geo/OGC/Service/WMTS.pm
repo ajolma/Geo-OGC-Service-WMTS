@@ -78,6 +78,10 @@ use Math::Trig;
 use Data::Dumper;
 use XML::LibXML::PrettyPrint;
 
+use Geo::OGC::Service;
+use vars qw(@ISA);
+push @ISA, qw(Geo::OGC::Service::Common);
+
 our $VERSION = '0.01';
 
 our $radius_of_earth_at_equator = 6378137;
@@ -183,19 +187,12 @@ sub GetCapabilities {
         'xsi:schemaLocation' => "http://www.opengis.net/wmts/1.0 ".
             "http://schemas.opengis.net/wmts/1.0/wmtsGetCapabilities_response.xsd",
     });
-    $writer->element('ows:ServiceIdentification', 
-                     [['ows:Title' => $self->{config}{Title} // 'Yet another WMTS server'],
-                      ['ows:Abstract'],
-                      ['ows:ServiceType', {codeSpace=>"OGC"}, 'OGC WMTS'],
-                      ['ows:ServiceTypeVersion', $self->{config}{ServiceTypeVersion} // '1.0.0'],
-                      ['ows:Fees' => $self->{config}{Fees} // 'NONE'],
-                      ['ows:AccessConstraints' => $self->{config}{AccessConstraints} // 'NONE']]);
-    $writer->element('ows:ServiceProvider',
-                     [['ows:ProviderName' => $self->{config}{ProviderName} // 'Nobody in particular'],
-                      ['ows:ProviderSite', { 'xlink:type'=>"simple", 
-                                             'xlink:href' => $self->{config}{ProviderSite} // '' }],
-                      ['ows:ServiceContact' => $self->{config}{ServiceContact}]]);
-    $self->OperationsMetadata($writer, [qw/GetCapabilities GetTile GetFeatureInfo/]);
+    $self->DescribeService($writer);
+    $writer->open_element('ows:OperationsMetadata');
+    for my $operation (qw/GetCapabilities GetTile GetFeatureInfo/) {
+        $self->Operation( $writer, $operation, { Get => [ 'ows:AllowedValues' => ['ows:Value' => 'KVP' ] ] } );
+    }
+    $writer->close_element;
     $writer->open_element(Contents => {});
     for my $set (@{$self->{config}{TileSets}}) {
         my $projection = $projections{$set->{SRS}};
@@ -218,45 +215,6 @@ sub GetCapabilities {
     $writer->close_element;
     $writer->close_element;
     $writer->stream($self->{responder});
-}
-
-sub OperationsMetadata  {
-    my ($self, $writer, $operations) = @_;
-    $writer->open_element('ows:OperationsMetadata');
-    my @versions = split /,/, $self->{config}{AcceptVersions} // '2.0.0,1.1.0,1.0.0';
-    for my $operation (@$operations) {
-        $self->Operation( $writer, $operation,
-                          { GET => 1 },
-                          { GET => [ 'ows:AllowedValues' => ['ows:Value' => 'KVP' ] ] },
-                          [ { service => ['WFS'] }, 
-                            { AcceptVersions => \@versions }, 
-                            { AcceptFormats => ['text/xml'] }
-                          ]
-            );
-    }
-    $writer->close_element;
-}
-
-sub Operation {
-    my($self, $writer, $operation, $protocols, $constraints, $parameters) = @_;
-    my @parameters;
-    for my $p (@$parameters) {
-        for my $n (keys %$p) {
-            my @values;
-            for my $v (@{$p->{$n}}) {
-                push @values, ['ows:Value', $v];
-            }
-            push @parameters, ['ows:Parameter', {name=>$n}, \@values];
-        }
-    }
-    my $constraint;
-    $constraint = [ 'ows:Constraint' => {name => 'GetEncoding'}, $constraints->{GET} ] if $constraints->{GET};
-    my @http;
-    push @http, [ 'ows:Get' => { 'xlink:type'=>'simple', 'xlink:href'=>$self->{config}{resource} }, $constraint ]
-        if $protocols->{GET};
-    push @http, [ 'ows:Post' => { 'xlink:type'=>'simple', 'xlink:href'=>$self->{config}{resource} } ]
-        if $protocols->{POST};
-    $writer->element('ows:Operation' => { name => $operation }, [['ows:DCP' =>['ows:HTTP' => \@http ]], @parameters]);
 }
 
 sub WMSGetCapabilities {
