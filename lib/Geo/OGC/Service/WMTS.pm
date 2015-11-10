@@ -264,8 +264,8 @@ sub WMSGetCapabilities {
                                       #[BoundingBox => $set->{BoundingBox}], # with this QGIS does not show tiles at correct locations
                                       [BoundingBox => $projection->{extent}],
                                       [Resolutions => "@resolutions"],
-                                      [Width => $set->{Width} || 256],
-                                      [Height => $set->{Height} || 256],
+                                      [Width => $set->{Width} // $tile_width],
+                                      [Height => $set->{Height} // $tile_height],
                                       [Format => $set->{Format}],
                                       [Layers => $set->{Layers}],
                                       [Styles => undef]]]);
@@ -331,7 +331,7 @@ sub GetMap {
     }
     
     my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
-    my $units_per_pixel = ($bbox[2]-$bbox[0])/256;
+    my $units_per_pixel = ($bbox[2]-$bbox[0])/$tile_width;
     my $z;
     my $res;
     my $i = 0;
@@ -352,8 +352,8 @@ sub GetMap {
     my $px = ($bbox[0] + $originShift) / $res;
     my $py = ($bbox[1] + $originShift) / $res;
 
-    my $tx = int( POSIX::ceil( $px / 256.0 ) - 1 );
-    my $ty = int( POSIX::ceil( $py / 256.0 ) - 1 );
+    my $tx = int( POSIX::ceil( $px / $tile_width ) - 1 );
+    my $ty = int( POSIX::ceil( $py / $tile_height ) - 1 );
 
     my $file = "$set->{path}/$z/$tx/$ty.$set->{ext}";
 
@@ -410,7 +410,7 @@ sub GetTile {
 
     if ($set->{file}) {
 
-        # clip from file, Translate probably needs 2.1
+        # clip from file, Translate needs 2.1
         my $ds = Geo::GDAL::Open($set->{file});
         my $projection = $projections{$set->{SRS}};
         my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
@@ -426,10 +426,37 @@ sub GetTile {
         {
             use bytes;
             $file = "/vsistdout";
+            my $pixel_width = $width / $tile_width;
+            my $pixel_height = $height / $tile_height;
             my $stdout = capture_stdout {
+                if ($set->{processing}) {
+                    $tile_width += 2;
+                    $tile_height += 2;
+                    $minx -= $pixel_width;
+                    $maxy += $pixel_height;
+                    $maxx += $pixel_width; 
+                    $miny -= $pixel_height;
+                    $file = "/vsimem/tmp.png"; # should be unique?
+                }
                 $ds->Translate($file, ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                       '-outsize' , 256, 256, 
+                                       '-outsize' , $tile_width, $tile_height, 
                                        '-projwin', $minx, $maxy, $maxx, $miny]);
+                if ($set->{processing}) {
+                    $ds = Geo::GDAL::Open($file);
+                    $file = "/vsimem/tmp2.png";
+                    $ds->DEMProcessing($file, $set->{processing}, undef, { of => 'PNG' });
+                    $ds = Geo::GDAL::Open($file);
+                    $file = "/vsistdout";
+                    $tile_width -= 2;
+                    $tile_height -= 2;
+                    $minx += $pixel_width;
+                    $maxy -= $pixel_height;
+                    $maxx -= $pixel_width; 
+                    $miny += $pixel_height;
+                    $ds->Translate($file, ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                           '-outsize' , $tile_width, $tile_height, 
+                                           '-projwin', $minx, $maxy, $maxx, $miny]);
+                }
             };
         
             return $self->{responder}->([ 200, 
@@ -562,7 +589,10 @@ sub tilemapresource {
     $writer->element(BoundingBox => $set->{BoundingBox});
     $writer->element(Origin => {x => $set->{BoundingBox}{minx}, y => $set->{BoundingBox}{miny}});
     my ($ext) = $set->{Format} =~ /(\w+)$/;
-    $writer->element(TileFormat => {width => 256, height => 256, 'mime-type' => $set->{Format}, extension => $ext });
+    $writer->element(TileFormat => { width => $set->{Width} // $tile_width, 
+                                     height => $set->{Height} // $tile_height, 
+                                     'mime-type' => $set->{Format}, 
+                                     extension => $ext });
     my @sets;
     my ($n, $m) = $set->{Resolutions} =~ /(\d+)\.\.(\d+)$/;
     my $projection = $projections{$set->{SRS}};
