@@ -67,13 +67,11 @@ use feature "switch";
 use Carp;
 use File::Basename;
 use Modern::Perl;
-use Capture::Tiny ':all';
-use Clone 'clone';
 use JSON;
-use DBI;
 use Geo::GDAL;
 use Cwd;
 use Math::Trig;
+use HTTP::Date;
 
 use Data::Dumper;
 use XML::LibXML::PrettyPrint;
@@ -147,12 +145,12 @@ sub process_request {
     }
     my $response;
     for ($self->{request} // '') {
-        if ($self->{service} eq 'TMS' and (/^GetCapabilities/ or /^capabilities/)) { $self->WMSGetCapabilities() }
+        if ($self->{service} eq 'WMS' and (/^GetCapabilities/ or /^capabilities/)) { $self->WMSGetCapabilities() }
         elsif (/^GetCapabilities/ or /^capabilities/) { $self->GetCapabilities() }
         elsif (/^GetTile/)                         { $response = $self->GetTile() }
         elsif (/^GetMap/)                          { $response = $self->GetMap() }
         elsif ($self->{service} eq 'TMS')          { $response = $self->TMS() }
-        elsif (/^FeatureInfo/)                     { $self->FeatureInfo() }
+        elsif (/^FeatureInfo/)                     { $response = $self->FeatureInfo() }
         elsif (/^$/)                               { 
             $self->error({ exceptionCode => 'MissingParameterValue',
                            locator => 'request' }) }
@@ -299,6 +297,10 @@ sub WMSGetCapabilities {
 
 Sends the requested tile based on parameters BBOX and LAYERS.
 
+The tiles should be in a tile map resource type of directory structure
+(z/y/x.png). The value of the 'path' key in the TileSet config element
+should point to the directory.
+
 =cut
 
 sub GetMap {
@@ -355,43 +357,29 @@ sub GetMap {
     my $tx = int( POSIX::ceil( $px / $tile_width ) - 1 );
     my $ty = int( POSIX::ceil( $py / $tile_height ) - 1 );
 
-    my $file = "$set->{path}/$z/$tx/$ty.$set->{ext}";
-
-    $file = $self->{config}{blank} unless -r $file;
-
-    open my $fh, "<:raw", $file or return $self->return_403;
-
-    my @stat = stat $file;
-
-    Plack::Util::set_io_path($fh, Cwd::realpath($file));
-    
-    return [ 200, 
-             [
-              'Content-Type'   => $set->{Format},
-              'Content-Length' => $stat[7],
-              'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
-             ],
-             $fh,
-        ];
+    return $self->tile("$set->{path}/$z/$tx/$ty.$set->{ext}", $set->{Format});
 }
 
 =pod
 
-=head3 GetMap
+=head3 GetTile
 
 Sends the requested tile based on parameters Layer, Tilerow, Tilecol,
 Tilematrix, Tilematrixset, and Format.
+
+The tile is served from a tile map directory or it is made on the fly
+from a GDAL data source (the value of the 'file' key in the TileSet).
+In addition, processing may be applied to the data source (the
+'processing' key). The processing may be one of those implemented in
+GDAL.
 
 =cut
 
 sub GetTile {
     my ($self) = @_;
     for my $param (qw/layer tilerow tilecol tilematrix tilematrixset format/) {
-        unless ($self->{parameters}{$param}) {
-            $self->error({ exceptionCode => 'MissingParameterValue',
-                           locator => $param });
-            return;
-        }
+        return $self->error({ exceptionCode => 'MissingParameterValue',
+                              locator => $param }) unless $self->{parameters}{$param};
     }
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
@@ -400,99 +388,42 @@ sub GetTile {
             last;
         }
     }
-    unless ($set) {
-        $self->error({ exceptionCode => 'InvalidParameterValue',
-                       locator => 'layer' });
-        return;
-    }
-
-    my $file;
-
+    return $self->error({ exceptionCode => 'InvalidParameterValue',
+                          locator => 'layer' }) unless $set;
+    
     if ($set->{file}) {
 
-        # clip from file, Translate needs 2.1
+        return $self->error({ exceptionCode => 'ResourceNotFound',
+                              ExceptionText => "file resources are not supported by this GDAL version." })
+            unless Geo::GDAL::Dataset->can('Translate');
+        
         my $ds = Geo::GDAL::Open($set->{file});
         my $projection = $projections{$set->{SRS}};
-        my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
-        my $extent_height = $projection->{extent}{maxy} - $projection->{extent}{miny};
-        my $matrix_width = 2**$self->{parameters}{tilematrix};
-        my $width = $extent_width/$matrix_width;
-        my $height = $extent_height/$matrix_width;
-        my $minx = $projection->{extent}{minx} + $self->{parameters}{tilecol} * $width;
-        my $maxy = $projection->{extent}{maxy} - $self->{parameters}{tilerow} * $height;
-        my $maxx = $projection->{extent}{minx} + ($self->{parameters}{tilecol}+1) * $width;
-        my $miny = $projection->{extent}{maxy} - ($self->{parameters}{tilerow}+1) * $height;
-
-        {
-            use bytes;
-            $file = "/vsistdout";
-            my $pixel_width = $width / $tile_width;
-            my $pixel_height = $height / $tile_height;
-            my $stdout = capture_stdout {
-                if ($set->{processing}) {
-                    $tile_width += 2;
-                    $tile_height += 2;
-                    $minx -= $pixel_width;
-                    $maxy += $pixel_height;
-                    $maxx += $pixel_width; 
-                    $miny -= $pixel_height;
-                    $file = "/vsimem/tmp.png"; # should be unique?
-                }
-                $ds->Translate($file, ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                       '-outsize' , $tile_width, $tile_height, 
-                                       '-projwin', $minx, $maxy, $maxx, $miny]);
-                if ($set->{processing}) {
-                    $ds = Geo::GDAL::Open($file);
-                    $file = "/vsimem/tmp2.png";
-                    $ds->DEMProcessing($file, $set->{processing}, undef, { of => 'PNG' });
-                    $ds = Geo::GDAL::Open($file);
-                    $file = "/vsistdout";
-                    $tile_width -= 2;
-                    $tile_height -= 2;
-                    $minx += $pixel_width;
-                    $maxy -= $pixel_height;
-                    $maxx -= $pixel_width; 
-                    $miny += $pixel_height;
-                    $ds->Translate($file, ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                           '-outsize' , $tile_width, $tile_height, 
-                                           '-projwin', $minx, $maxy, $maxx, $miny]);
-                }
-            };
-        
-            return $self->{responder}->([ 200, 
-                                          [
-                                           'Content-Type'   => $set->{Format},
-                                           'Content-Length' => length($stdout)
-                                          ],
-                                          [$stdout],
-                                        ]);
+        my $tile = Tile->new($projection->{extent}, $self->{parameters});
+            
+        if ($set->{processing}) {
+            $tile->expand(1);
+            $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                                      '-outsize' , $tile->tile,
+                                                      '-projwin', $tile->extent] );
+            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
+            $tile->expand(-1);
         }
+        
+        my $writer = $self->{responder}->([200, [ 'Content-Type' => $set->{Format} ]]);
+        
+        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                 '-outsize' , $tile->tile,
+                                 '-projwin', $tile->extent]);
+        return undef;
 
-    } else {
+    }
 
-        my $z = $self->{parameters}{tilematrix};
-        my $y = $self->{parameters}{tilecol};
-        my $x = 2**$z-$self->{parameters}{tilerow}-1;
+    my $z = $self->{parameters}{tilematrix};
+    my $y = $self->{parameters}{tilecol};
+    my $x = 2**$z-$self->{parameters}{tilerow}-1;
+    return $self->tile("$set->{path}/$z/$y/$x.$set->{ext}", $set->{Format});
 
-        $file = "$set->{path}/$z/$y/$x.$set->{ext}";
-        $file = $self->{config}{blank} unless -r $file;
-
-    }   
-
-    open my $fh, "<:raw", $file or return $self->return_403;
-
-    my @stat = stat $file;
-
-    Plack::Util::set_io_path($fh, Cwd::realpath($file));
-    
-    return $self->{responder}->([ 200, 
-                           [
-                            'Content-Type'   => $set->{Format},
-                            'Content-Length' => $stat[7],
-                            'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
-                           ],
-                           $fh,
-                         ]);
 }
 
 =pod
@@ -509,32 +440,43 @@ sub TMS {
     my ($self) = @_;
     my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/; # /ilmakuvat/10/577/735.png
     return $self->tilemaps unless defined $layer;
-    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/; # /ilmakuvat/10/577/735.png
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
         $set = $s, last if $s->{Layers} eq $layer;
     }
-    return $self->return_403 unless defined $set;
+    return error_403() unless defined $set;
+    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/; # /ilmakuvat/10/577/735.png
     $ext = $set->{ext} unless $ext;
     return $self->tilemapresource($set) unless defined $zxy;
-    
-    my $file = "$set->{path}/$zxy.$ext";
-    $file = $self->{config}{blank} unless -r $file;
+    return $self->tile("$set->{path}/$zxy.$ext", 'image/'.$ext);
+}
 
-    open my $fh, "<:raw", $file or return $self->return_403;
+=pod
 
-    my @stat = stat $file;
-    
-    Plack::Util::set_io_path($fh, Cwd::realpath($file));
-    
-    $self->{responder}->([ 200, 
-                           [
-                            'Content-Type'   => 'image/'.$ext,
-                            'Content-Length' => $stat[7],
-                            'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
-                           ],
-                           $fh,
-                         ]);
+=head3 FeatureInfo
+
+Not yet implemented.
+
+=cut
+
+sub FeatureInfo {
+    my ($self) = @_;
+    return error_403();
+}
+
+sub tile {
+    my ($self, $tile, $content_type) = @_;
+    $tile = $self->{config}{blank} unless -r $tile;
+    open my $fh, "<:raw", $tile or return error_403();
+    my @stat = stat $tile;
+    Plack::Util::set_io_path($fh, Cwd::realpath($tile));
+    return [ 200, [
+                 'Content-Type'   => $content_type,
+                 'Content-Length' => $stat[7],
+                 'Last-Modified'  => HTTP::Date::time2str( $stat[9] )
+             ],
+             $fh,
+        ];
 }
 
 sub tile_matrix_set {
@@ -565,7 +507,8 @@ sub tile_matrix_set {
 sub tilemaps {
     my ($self) = @_;
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
-    $writer->open_element(TileMapService => { version => "1.0.0", tilemapservice => "http://tms.osgeo.org/1.0.0" });
+    $writer->open_element(TileMapService => { version => "1.0.0", 
+                                              tilemapservice => "http://tms.osgeo.org/1.0.0" });
     $writer->open_element(TileMaps => {});
     for my $set (@{$self->{config}{TileSets}}) {
         $writer->element(TileMap => {href => $self->{config}{resource}.'/'.$set->{Layers}, 
@@ -582,7 +525,8 @@ sub tilemaps {
 sub tilemapresource {
     my ($self, $set) = @_;
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
-    $writer->open_element(TileMap => { version => "1.0.0", tilemapservice => "http://tms.osgeo.org/1.0.0" });
+    $writer->open_element(TileMap => { version => "1.0.0", 
+                                       tilemapservice => "http://tms.osgeo.org/1.0.0" });
     $writer->element(Title => $set->{Title} // $set->{Layers});
     $writer->element(Abstract => $set->{Abstract} // '');
     $writer->element(SRS => $set->{SRS} // 'EPSG:3857');
@@ -610,20 +554,11 @@ sub tilemapresource {
     return undef;
 }
 
-sub return_403 {
-    my $self = shift;
-    $self->{responder}->([403, ['Content-Type' => 'text/plain', 'Content-Length' => 9], ['forbidden']]);
-}
-
-sub FeatureInfo {
-    my ($self) = @_;
-    $self->return_403;
-}
-
 sub error {
     my ($self, $msg) = @_;
     if (!$msg->{debug}) {
         Geo::OGC::Service::error($self->{responder}, $msg);
+        return undef;
     } else {
         my $json = JSON->new;
         $json->allow_blessed([1]);
@@ -637,6 +572,49 @@ sub error {
 sub log {
     my ($self, $msg) = @_;
     say STDERR Dumper($msg);
+}
+
+{
+    package Tile;
+    sub new {
+        my ($class, $extent, $parameters) = @_;
+        my $self = []; # tile_width tile_height minx maxy maxx miny pixel_width pixel_height
+        $self->[0] = $Geo::OGC::Service::WMTS::tile_width;
+        $self->[1] = $Geo::OGC::Service::WMTS::tile_height;
+        my $extent_width = $extent->{maxx} - $extent->{minx};
+        my $extent_height = $extent->{maxy} - $extent->{miny};
+        my $matrix_width = 2**$parameters->{tilematrix};
+        my $width = $extent_width/$matrix_width;
+        my $height = $extent_height/$matrix_width;
+        $self->[2] = $extent->{minx} + $parameters->{tilecol} * $width;
+        $self->[3] = $extent->{maxy} - $parameters->{tilerow} * $height;
+        $self->[4] = $extent->{minx} + ($parameters->{tilecol}+1) * $width;
+        $self->[5] = $extent->{maxy} - ($parameters->{tilerow}+1) * $height;
+        $self->[6] = $width / $self->[0];
+        $self->[7] = $height / $self->[1];
+        bless $self, $class;
+    }
+    sub tile {
+        my ($self) = @_;
+        return @{$self}[0..1];
+    }
+    sub extent {
+        my ($self) = @_;
+        return @{$self}[2..5];
+    }
+    sub expand {
+        my ($self, $pixels) = @_;
+        $self->[0] += 2*$pixels;
+        $self->[1] += 2*$pixels;
+        $self->[2] -= $self->[6]*$pixels;
+        $self->[3] += $self->[7]*$pixels;
+        $self->[4] += $self->[6]*$pixels; 
+        $self->[5] -= $self->[7]*$pixels;
+    }
+}
+
+sub error_403 {
+    [403, ['Content-Type' => 'text/plain', 'Content-Length' => 9], ['forbidden']];
 }
 
 1;
