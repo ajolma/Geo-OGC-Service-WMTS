@@ -116,8 +116,8 @@ our %projections = (
 
 =head3 process_request
 
-The entry method into this service. Falls back to TMS is service is
-TMS.
+The entry method into this service. Calls TMS method if service is
+TMS, otherwise examines the request parameter.
 
 =cut
 
@@ -166,7 +166,7 @@ sub process_request {
 
 =head3 GetCapabilities
 
-Sends the capabilities document according to WMTS standard if the
+Sends a capabilities document according to WMTS standard if the
 requested service is WMTS and according to WMS if the requested
 service is WMS.
 
@@ -295,6 +295,8 @@ sub WMSGetCapabilities {
 
 =head3 GetMap
 
+The tile request if WMS is used.
+
 Sends the requested tile based on parameters BBOX and LAYERS.
 
 The tiles should be in a tile map resource type of directory structure
@@ -364,6 +366,8 @@ sub GetMap {
 
 =head3 GetTile
 
+The tile request if WMTS is used.
+
 Sends the requested tile based on parameters Layer, Tilerow, Tilecol,
 Tilematrix, Tilematrixset, and Format.
 
@@ -430,22 +434,24 @@ sub GetTile {
 
 =head3 TMS
 
-Sends TileMapService (layer not in the URL) or TileMap (layer in the
-URL but no zoom, row, col) document, or the requested tile based on
-layer, zoom, row, and column in the URL.
+RESTful service. The URL should have the form TMS/layer/z/y/x.png.
+
+Sends TileMapService response if the layer not in the URL, TileMap
+response if the layer is in the URL but zoom, row, and col are not, or
+the requested tile based on layer, zoom, row, and column in the URL.
 
 =cut
 
 sub TMS {
     my ($self) = @_;
-    my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/; # /ilmakuvat/10/577/735.png
+    my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/;
     return $self->tilemaps unless defined $layer;
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
         $set = $s, last if $s->{Layers} eq $layer;
     }
     return error_403() unless defined $set;
-    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/; # /ilmakuvat/10/577/735.png
+    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/;
     $ext = $set->{ext} unless $ext;
     return $self->tilemapresource($set) unless defined $zxy;
     return $self->tile("$set->{path}/$zxy.$ext", 'image/'.$ext);
