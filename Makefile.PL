@@ -17,7 +17,9 @@ WriteMakefile(
     },
     TEST_REQUIRES     => { "Plack::Test" => 0,
                            "XML::LibXML" => 0,
-                           "XML::SemanticDiff" => 0 
+                           "XML::SemanticDiff" => 0,
+                           "XML::LibXML::PrettyPrint" => 0,
+                           "Plack::Builder" => 0
     },
     ABSTRACT_FROM     => 'lib/Geo/OGC/Service/WMTS.pm', # retrieve abstract from module
     AUTHOR            => 'Ari Jolma <ari.jolma at gmail.com>',
