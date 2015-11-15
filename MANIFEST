@@ -3,5 +3,4 @@ LICENSE
 MANIFEST
 README.md
 t/Geo-OGC-Service-WMTS.t
-t/Geo-OGC-Service-WMTS.conf
 lib/Geo/OGC/Service/WMTS.pm

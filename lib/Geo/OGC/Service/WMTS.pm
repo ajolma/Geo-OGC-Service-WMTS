@@ -377,6 +377,8 @@ In addition, processing may be applied to the data source (the
 'processing' key). The processing may be one of those implemented in
 GDAL.
 
+The 'file' keyword requires GDAL 2.1.
+
 =cut
 
 sub GetTile {
@@ -403,26 +405,38 @@ sub GetTile {
         
         my $ds = Geo::GDAL::Open($set->{file});
         my $projection = $projections{$set->{SRS}};
+        
         my $tile = Tile->new($projection->{extent}, $self->{parameters});
+
+        eval {
+   
+            if ($set->{processing}) {
+                $tile->expand(1);
+                $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                                          '-outsize' , $tile->tile,
+                                                          '-projwin', $tile->extent] );
+                $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
+                $tile->expand(-1);
+            }
+        
+            my $writer = $self->{responder}->([200, [ 'Content-Type' => $set->{Format} ]]);
             
-        if ($set->{processing}) {
-            $tile->expand(1);
-            $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                                      '-outsize' , $tile->tile,
-                                                      '-projwin', $tile->extent] );
-            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
-            $tile->expand(-1);
+            $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                     '-outsize' , $tile->tile,
+                                     '-projwin', $tile->extent]);
+        };
+        
+        if ($@) {
+            my $err = Geo::GDAL::error();
+            say STDERR $err;
+            return $self->error({ exceptionCode => 'ResourceNotFound',
+                                  ExceptionText => $err });
         }
         
-        my $writer = $self->{responder}->([200, [ 'Content-Type' => $set->{Format} ]]);
-        
-        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                 '-outsize' , $tile->tile,
-                                 '-projwin', $tile->extent]);
         return undef;
-
+        
     }
-
+    
     my $z = $self->{parameters}{tilematrix};
     my $y = $self->{parameters}{tilecol};
     my $x = 2**$z-$self->{parameters}{tilerow}-1;
