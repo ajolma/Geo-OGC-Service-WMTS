@@ -501,11 +501,12 @@ sub tile {
 
 sub tile_matrix_set {
     my ($writer, $projection, $tile_matrix_set) = @_;
+    $writer->open_element('TileMatrixSet');
     $writer->element('ows:Identifier' => $projection->{identifier});
     $writer->element(BoundingBox => { crs =>  $projection->{crs} },
                      [ ['ows:LowerCorner' => $projection->{extent}{minx}.' '.$projection->{extent}{miny} ],
                        ['ows:UpperCorner' => $projection->{extent}{maxx}.' '.$projection->{extent}{maxy} ] ]);
-    $writer->element('ows:SupportedCRS' => { crs =>  $projection->{crs} });
+    $writer->element('ows:SupportedCRS' => { crs =>  $projection->{crs} }, $projection->{crs});
     my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
     for my $tile_matrix (@$tile_matrix_set) {
         my $matrix_width = 2**$tile_matrix;
@@ -522,6 +523,7 @@ sub tile_matrix_set {
                            [ MatrixWidth => $matrix_width ],
                            [ MatrixHeight => $matrix_height ] ]);
     }
+    $writer->close_element();
 }
 
 sub tilemaps {
