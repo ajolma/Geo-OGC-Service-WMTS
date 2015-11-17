@@ -116,44 +116,39 @@ our %projections = (
 
 =head3 process_request
 
-The entry method into this service. Calls TMS method if service is
-TMS, otherwise examines the request parameter.
+The entry method into this service. Calls RESTful if there is no
+request parameter, otherwise dispatches the call to
+WMSGetCapabilities, GetCapabilities, GetTile, GetMap, or FeatureInfo
+depending on service and request. If request is not recognized,
+returns an error XML with exceptionCode => 'InvalidParameterValue'.
 
 =cut
 
 sub process_request {
     my ($self, $responder) = @_;
-    $self->{request} = $self->{parameters}{request};
     $self->{debug} = $self->{config}{debug};
-    $self->{responder} = $responder;
-    if ($self->{parameters}{debug}) {
-        $self->error({ 
-            debug => { 
-                config => $self->{config}, 
-                parameters => $self->{parameters}, 
-                env => $self->{env},
-                request => $self->{request} 
-            } });
-        return;
-    }
     if ($self->{debug}) {
         if ($self->{debug} > 2) {
             $self->log($self);
+        } elsif ($self->{debug} > 1) {
+            $self->log({ service => $self->{service},
+                         parameters => $self->{parameters},
+                         request => $self->{request} });
         } else {
-            $self->log($self->{parameters});
+            $self->log({ service => $self->{service},
+                         parameters => $self->{parameters} });
         }
     }
+    $self->{responder} = $responder;
+    $self->{request} = $self->{parameters}{request} // '';
     my $response;
     for ($self->{request} // '') {
         if ($self->{service} eq 'WMS' and (/^GetCapabilities/ or /^capabilities/)) { $self->WMSGetCapabilities() }
         elsif (/^GetCapabilities/ or /^capabilities/) { $self->GetCapabilities() }
         elsif (/^GetTile/)                         { $response = $self->GetTile() }
         elsif (/^GetMap/)                          { $response = $self->GetMap() }
-        elsif ($self->{service} eq 'TMS')          { $response = $self->TMS() }
         elsif (/^FeatureInfo/)                     { $response = $self->FeatureInfo() }
-        elsif (/^$/)                               { 
-            $self->error({ exceptionCode => 'MissingParameterValue',
-                           locator => 'request' }) }
+        elsif (/^$/)                               { $response = $self->RESTful() }
         else                                       { 
             $self->error({ exceptionCode => 'InvalidParameterValue',
                            locator => 'request',
@@ -166,9 +161,7 @@ sub process_request {
 
 =head3 GetCapabilities
 
-Sends a capabilities document according to WMTS standard if the
-requested service is WMTS and according to WMS if the requested
-service is WMS.
+Sends a capabilities document according to WMTS standard.
 
 =cut
 
@@ -192,28 +185,63 @@ sub GetCapabilities {
     }
     $writer->close_element;
     $writer->open_element(Contents => {});
+
+    my $t_srs = Geo::OSR::SpatialReference->new(EPSG => 4326);
+
     for my $set (@{$self->{config}{TileSets}}) {
         my $projection = $projections{$set->{SRS}};
-        $writer->element('Layer' => [
-                             [ 'ows:Title' => $set->{Title} // $set->{Layers} ],
-                             [ 'ows:Identifier' => $set->{Layers} ],
-                             [ 'Style' => { isDefault => 'true' }, [ 'ows:Identifier' => 'default' ] ],
-                             [ Format => $set->{Format} ],
-                             [ TileMatrixSetLink => [ TileMatrixSet => $projection->{identifier} ] ],
-                             [ ResourceURL => { 
-                                 resourceType => 'tile',
-                                 'format' => $set->{Format},
-                                 template => $self->{config}{resource} }]
-                         ]
-            )
+
+        my $bb;
+        if ($set->{BoundingBox}) {
+            my ($epsg) = $set->{BoundingBox}{SRS} =~ /(\d+)/;
+            my $s_srs = Geo::OSR::SpatialReference->new(EPSG => $epsg);
+            my $ct = Geo::OSR::CoordinateTransformation->new($s_srs, $t_srs);
+
+            my $x = $set->{BoundingBox};
+            $x = $projection->{extent};
+
+            my $points = [[$x->{minx}, $x->{miny}],
+                          [$x->{maxx}, $x->{maxy}]];
+
+            $ct->TransformPoints($points);
+
+            $bb = [ 'ows:WGS84BoundingBox' => { crs => "urn:ogc:def:crs:OGC:2:84" },
+                   [ [ 'ows:LowerCorner' => "$points->[0][0] $points->[0][1]" ],
+                     [ 'ows:UpperCorner' => "$points->[1][0] $points->[1][1]" ] ] ];
+            
+        }
+
+        my ($ext) = $set->{Format} =~ /(\w+)$/;
+        my @layer = (
+            [ 'ows:Title' => $set->{Title} // $set->{Layers} ],
+            [ 'ows:Identifier' => $set->{Layers} ],
+            [ 'Style' => { isDefault => 'true' }, [ 'ows:Identifier' => 'default' ] ],
+            [ Format => $set->{Format} ],
+            [ TileMatrixSetLink => [ TileMatrixSet => $projection->{identifier} ] ],
+            [ ResourceURL => { 
+                resourceType => 'tile',
+                format => $set->{Format},
+                template => "$self->{config}{resource}/$set->{Layers}/{TileMatrix}/{TileCol}/{TileRow}.$ext"
+              }]
+        );
+        push @layer, $bb if $bb;
+        $writer->element('Layer' => \@layer );
     };
     for my $projection (keys %projections) {
-        tile_matrix_set($writer, $projections{$projection}, [0..15]);
+        tile_matrix_set($writer, $projections{$projection}, [0..17]); # GDAL uses the highest value
     }
     $writer->close_element;
     $writer->close_element;
     $writer->stream($self->{responder});
 }
+
+=pod
+
+=head3 WMSGetCapabilities
+
+Sends a capabilities document according to WMS standard.
+
+=cut
 
 sub WMSGetCapabilities {
     my ($self) = @_;
@@ -249,18 +277,21 @@ sub WMSGetCapabilities {
     
     for my $set (@{$self->{config}{TileSets}}) {
         my($i0,$i1) = split /\.\./, $set->{Resolutions};
+
         #my @resolutions = @resolutions_3857[$i0..$i1]; # with this QGIS starts to ask higher resolution tiles
-        #my @resolutions = @resolutions_3857;
         my @resolutions;
         my $projection = $projections{$set->{SRS}};
         my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
         for my $i (0..19) {
             $resolutions[$i] = $extent_width/(2**$i * $tile_width);
         }
+
+        my $bb = $set->{BoundingBox}; # with this QGIS does not show tiles at correct locations
+        $bb = $projection->{extent};
+
         $writer->element(VendorSpecificCapabilities => 
                          [TileSet => [[SRS => $set->{SRS}],
-                                      #[BoundingBox => $set->{BoundingBox}], # with this QGIS does not show tiles at correct locations
-                                      [BoundingBox => $projection->{extent}],
+                                      [BoundingBox => $bb],
                                       [Resolutions => "@resolutions"],
                                       [Width => $set->{Width} // $tile_width],
                                       [Height => $set->{Height} // $tile_height],
@@ -273,15 +304,19 @@ sub WMSGetCapabilities {
                      {SupportSLD => 0, UserLayer => 0, UserStyle => 0, RemoteWFS => 0});
 
     for my $set (@{$self->{config}{TileSets}}) {
+
         my $projection = $projections{$set->{SRS}};
+
+        my $bb = $set->{BoundingBox}; # with this QGIS does not show tiles at correct locations
+        $bb = $projection->{extent};
+
         $writer->element(Layer => [[Title => 'TileCache Layers'],
                                    [Layer => {queryable => 0, opaque => 0, cascaded => 1}, 
                                     [[Name => $set->{Layers}],
                                      [Title => $set->{Layers}],
                                      [SRS => $set->{SRS}],
                                      [Format => $set->{Format}],
-                                     [BoundingBox => $projection->{extent}],
-                                     #[BoundingBox => $set->{BoundingBox}] # with this QGIS does not show tiles at correct locations
+                                     [BoundingBox => $bb]
                                     ]]
                          ]);
     }
@@ -295,7 +330,7 @@ sub WMSGetCapabilities {
 
 =head3 GetMap
 
-The tile request if WMS is used.
+Serves the tile request if WMS is used.
 
 Sends the requested tile based on parameters BBOX and LAYERS.
 
@@ -336,18 +371,18 @@ sub GetMap {
     
     my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
     my $units_per_pixel = ($bbox[2]-$bbox[0])/$tile_width;
-    my $z;
+    my $matrix;
     my $res;
     my $i = 0;
     for my $r (@resolutions) {
         if (abs($r - $units_per_pixel) < 0.1) {
             $res = $r;
-            $z = $i;
+            $matrix = $i;
             last;
         }
         $i++;
     }
-    my $rows = 2**$z;
+    my $rows = 2**$matrix;
 
     # from globalmaptiles.py by Klokan Petr Pridal:
 
@@ -356,17 +391,26 @@ sub GetMap {
     my $px = ($bbox[0] + $originShift) / $res;
     my $py = ($bbox[1] + $originShift) / $res;
 
-    my $tx = int( POSIX::ceil( $px / $tile_width ) - 1 );
-    my $ty = int( POSIX::ceil( $py / $tile_height ) - 1 );
+    my $col = int( POSIX::ceil( $px / $tile_width ) - 1 );
+    my $row = int( POSIX::ceil( $py / $tile_height ) - 1 );
 
-    return $self->tile("$set->{path}/$z/$tx/$ty.$set->{ext}", $set->{Format});
+    ($set->{ext}) = $set->{Format} =~ /(\w+)$/;
+
+    if ($set->{file}) {
+        $self->{parameters}{tilematrix} = $matrix;
+        $self->{parameters}{tilecol} = $row;
+        $self->{parameters}{tilerow} = 2**$matrix-($col+1);
+        return $self->make_tile($set);
+    }
+
+    return $self->tile("$set->{path}/$matrix/$col/$row.$set->{ext}", $set->{Format});
 }
 
 =pod
 
 =head3 GetTile
 
-The tile request if WMTS is used.
+Serves the tile request if WMTS is used.
 
 Sends the requested tile based on parameters Layer, Tilerow, Tilecol,
 Tilematrix, Tilematrixset, and Format.
@@ -377,7 +421,7 @@ In addition, processing may be applied to the data source (the
 'processing' key). The processing may be one of those implemented in
 GDAL.
 
-The 'file' keyword requires GDAL 2.1.
+Using the 'file' keyword requires GDAL 2.1.
 
 =cut
 
@@ -387,6 +431,7 @@ sub GetTile {
         return $self->error({ exceptionCode => 'MissingParameterValue',
                               locator => $param }) unless $self->{parameters}{$param};
     }
+    ($self->{parameters}{ext}) = $self->{parameters}{format} =~ /(\w+)$/;
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
         if ($s->{Layers} eq $self->{parameters}{layer}) {
@@ -395,80 +440,69 @@ sub GetTile {
         }
     }
     return $self->error({ exceptionCode => 'InvalidParameterValue',
-                          locator => 'layer' }) unless $set;
-    
-    if ($set->{file}) {
+                          locator => 'layer' }) unless defined $set;
 
-        return $self->error({ exceptionCode => 'ResourceNotFound',
-                              ExceptionText => "file resources are not supported by this GDAL version." })
-            unless Geo::GDAL::Dataset->can('Translate');
-        
-        my $ds = Geo::GDAL::Open($set->{file});
-        my $projection = $projections{$set->{SRS}};
-        
-        my $tile = Tile->new($projection->{extent}, $self->{parameters});
+    ($set->{ext}) = $set->{Format} =~ /(\w+)$/;
 
-        eval {
-   
-            if ($set->{processing}) {
-                $tile->expand(1);
-                $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                                          '-outsize' , $tile->tile,
-                                                          '-projwin', $tile->extent] );
-                $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
-                $tile->expand(-1);
-            }
-        
-            my $writer = $self->{responder}->([200, [ 'Content-Type' => $set->{Format} ]]);
-            
-            $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
-                                     '-outsize' , $tile->tile,
-                                     '-projwin', $tile->extent]);
-        };
-        
-        if ($@) {
-            my $err = Geo::GDAL::error();
-            say STDERR $err;
-            return $self->error({ exceptionCode => 'ResourceNotFound',
-                                  ExceptionText => $err });
-        }
-        
-        return undef;
-        
-    }
+    return $self->make_tile($set) if $set->{file};
     
-    my $z = $self->{parameters}{tilematrix};
-    my $y = $self->{parameters}{tilecol};
-    my $x = 2**$z-$self->{parameters}{tilerow}-1;
-    return $self->tile("$set->{path}/$z/$y/$x.$set->{ext}", $set->{Format});
+    my $matrix = $self->{parameters}{tilematrix};
+    my $col = $self->{parameters}{tilecol};
+    my $row = 2**$matrix-$self->{parameters}{tilerow}-1;
+    my $ext = $self->{parameters}{ext} // $set->{ext};
+    return $self->tile("$set->{path}/$matrix/$col/$row.$ext", $set->{Format});
 
 }
 
 =pod
 
-=head3 TMS
+=head3 RESTful
 
-RESTful service. The URL should have the form TMS/layer/z/y/x.png.
+RESTful service. The URL should have the form
+<service>/layer/<TileMatrixSet>/<TileMatrix>/<TileCol>/<TileRow>.<ext>.
+TileMatrixSet is optional. Compare this to the template in
+capabilities.
 
-Sends TileMapService response if the layer not in the URL, TileMap
+Sends TileMapService response if the layer is not in the URL, TileMap
 response if the layer is in the URL but zoom, row, and col are not, or
 the requested tile based on layer, zoom, row, and column in the URL.
 
 =cut
 
-sub TMS {
+sub RESTful {
     my ($self) = @_;
-    my ($layer) = $self->{env}{PATH_INFO} =~ /^\/(\w+)/;
+    my $path = $self->{env}{PATH_INFO};
+    #print STDERR "$path\n";
+    my ($layer) = $path =~ /^\/(\w+)/;
     return $self->tilemaps unless defined $layer;
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
         $set = $s, last if $s->{Layers} eq $layer;
     }
-    return error_403() unless defined $set;
-    my (undef, $zxy, $ext) = $self->{env}{PATH_INFO} =~ /^\/(\w+)\/(.*?)\.(\w+)$/;
-    $ext = $set->{ext} unless $ext;
-    return $self->tilemapresource($set) unless defined $zxy;
-    return $self->tile("$set->{path}/$zxy.$ext", 'image/'.$ext);
+    return $self->error({ exceptionCode => 'InvalidParameterValue',
+                          locator => 'layer' }) unless defined $set;
+    $path =~ s/^\/(\w+)//;
+    my ($matrix, $col, $row, $ext) = $path =~ /^\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
+    unless (defined $matrix) {
+        ($self->{parameters}{tilematrixset}, $matrix, $col, $row, $ext) = 
+            $path =~ /^\/([\w\:]+)\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
+    }
+    return $self->tilemapresource($set) unless defined $matrix;
+
+    if ($set->{file}) {
+        $self->{parameters}{ext} = $ext;
+        $self->{parameters}{format} = "image/$ext";
+        $self->{parameters}{layer} = $layer;
+        $self->{parameters}{tilematrix} = $matrix;
+        $self->{parameters}{tilecol} = $col;
+        $self->{parameters}{tilerow} = 2**$matrix-($row+1);
+        return $self->make_tile($set);
+    }
+
+    #gdal:
+    $row = 2**$matrix-($row+1);
+
+    return $self->tile("$set->{path}/$matrix/$col/$row.$set->{ext}", $set->{Format});
 }
 
 =pod
@@ -484,8 +518,66 @@ sub FeatureInfo {
     return error_403();
 }
 
+sub make_tile {
+    my ($self, $set) = @_;
+
+    $self->log($self->{parameters});
+
+    return $self->error({ exceptionCode => 'ResourceNotFound',
+                          ExceptionText => "File resources are not supported by this GDAL version." })
+        unless Geo::GDAL::Dataset->can('Translate');
+        
+    my $ds = Geo::GDAL::Open($set->{file});
+
+    if (0) {
+        my $srs_s = $ds->SpatialReference;
+        
+        my ($epsg_t) = $set->{SRS} =~ /(\d+)/;
+        my $srs_t = Geo::OSR::SpatialReference->new(EPSG => $epsg_t);
+        
+        if (!$srs_s->IsSame($srs_t)) {
+            $ds = $ds->Warp('/vsimem/w.png', );
+        }
+    }
+
+    my $projection = $projections{$set->{SRS}};
+        
+    my $tile = Tile->new($projection->{extent}, $self->{parameters});
+
+    eval {
+   
+        if ($set->{processing}) {
+            $tile->expand(1);
+            $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                                      '-outsize' , $tile->tile,
+                                                      '-projwin', $tile->extent] );
+            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
+            $tile->expand(-1);
+        }
+        
+        my $writer = $self->{responder}->([200, [ 'Content-Type' => "image/png" ]]);
+            
+        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
+                                 '-outsize' , $tile->tile,
+                                 '-projwin', $tile->extent,
+                                 '-projwin_srs', $set->{SRS},
+                                 '-a_srs', $set->{SRS}
+                       ]);
+    };
+        
+    if ($@) {
+        my $err = Geo::GDAL::error();
+        say STDERR $err;
+        return $self->error({ exceptionCode => 'ResourceNotFound',
+                              ExceptionText => $err });
+    }
+        
+    return undef;
+}
+
 sub tile {
     my ($self, $tile, $content_type) = @_;
+    #print STDERR "tile: $tile, $content_type\n";
     $tile = $self->{config}{blank} unless -r $tile;
     open my $fh, "<:raw", $tile or return error_403();
     my @stat = stat $tile;
