@@ -198,7 +198,7 @@ sub GetCapabilities {
             my $ct = Geo::OSR::CoordinateTransformation->new($s_srs, $t_srs);
 
             my $x = $set->{BoundingBox};
-            $x = $projection->{extent};
+            #$x = $projection->{extent}; not in s_srs
 
             my $points = [[$x->{minx}, $x->{miny}],
                           [$x->{maxx}, $x->{maxy}]];
@@ -217,14 +217,14 @@ sub GetCapabilities {
             [ 'ows:Identifier' => $set->{Layers} ],
             [ 'Style' => { isDefault => 'true' }, [ 'ows:Identifier' => 'default' ] ],
             [ Format => $set->{Format} ],
-            [ TileMatrixSetLink => [ TileMatrixSet => $projection->{identifier} ] ],
-            [ ResourceURL => { 
-                resourceType => 'tile',
-                format => $set->{Format},
-                template => "$self->{config}{resource}/$set->{Layers}/{TileMatrix}/{TileCol}/{TileRow}.$ext"
-              }]
+            [ TileMatrixSetLink => [ TileMatrixSet => $projection->{identifier} ] ]
         );
         push @layer, $bb if $bb;
+        push @layer, [ ResourceURL => {
+            resourceType => 'tile',
+            format => $set->{Format},
+            template => "$self->{config}{resource}/$set->{Layers}/{TileMatrix}/{TileCol}/{TileRow}.$ext"
+        } ] if $set->{RESTful};
         $writer->element('Layer' => \@layer );
     };
     for my $projection (keys %projections) {
@@ -423,6 +423,9 @@ GDAL.
 
 Using the 'file' keyword requires GDAL 2.1.
 
+Keyword RESTful (0/1) controls the ResourceURL element in the
+capabilities XML. Default is false.
+
 =cut
 
 sub GetTile {
@@ -448,7 +451,7 @@ sub GetTile {
     
     my $matrix = $self->{parameters}{tilematrix};
     my $col = $self->{parameters}{tilecol};
-    my $row = 2**$matrix-$self->{parameters}{tilerow}-1;
+    my $row = 2**$matrix - ($self->{parameters}{tilerow} + 1);
     my $ext = $self->{parameters}{ext} // $set->{ext};
     return $self->tile("$set->{path}/$matrix/$col/$row.$ext", $set->{Format});
 
@@ -499,8 +502,7 @@ sub RESTful {
         return $self->make_tile($set);
     }
 
-    #gdal:
-    $row = 2**$matrix-($row+1);
+    $row = 2**$matrix - ($row + 1) if $self->{service} eq 'WMTS';
 
     return $self->tile("$set->{path}/$matrix/$col/$row.$set->{ext}", $set->{Format});
 }
@@ -550,7 +552,7 @@ sub make_tile {
             $tile->expand(1);
             $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
                                                       '-outsize' , $tile->tile,
-                                                      '-projwin', $tile->extent] );
+                                                      '-projwin', $tile->projwin] );
             $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
             $tile->expand(-1);
         }
@@ -559,7 +561,7 @@ sub make_tile {
             
         $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
                                  '-outsize' , $tile->tile,
-                                 '-projwin', $tile->extent,
+                                 '-projwin', $tile->projwin,
                                  '-projwin_srs', $set->{SRS},
                                  '-a_srs', $set->{SRS}
                        ]);
@@ -693,6 +695,7 @@ sub log {
     sub new {
         my ($class, $extent, $parameters) = @_;
         my $self = []; # tile_width tile_height minx maxy maxx miny pixel_width pixel_height
+                       #     0          1        2    3    4    5        6           7
         $self->[0] = $Geo::OGC::Service::WMTS::tile_width;
         $self->[1] = $Geo::OGC::Service::WMTS::tile_height;
         my $extent_width = $extent->{maxx} - $extent->{minx};
@@ -712,9 +715,13 @@ sub log {
         my ($self) = @_;
         return @{$self}[0..1];
     }
-    sub extent {
+    sub projwin {
         my ($self) = @_;
         return @{$self}[2..5];
+    }
+    sub extent {
+        my ($self) = @_;
+        return Geo::GDAL::Extent->new($self->[2], $self->[5], $self->[4], $self->[3]);
     }
     sub expand {
         my ($self, $pixels) = @_;
