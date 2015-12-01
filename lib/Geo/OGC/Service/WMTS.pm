@@ -80,7 +80,7 @@ use Geo::OGC::Service;
 use vars qw(@ISA);
 push @ISA, qw(Geo::OGC::Service::Common);
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 our $radius_of_earth_at_equator = 6378137;
 our $standard_pixel_size = 0.28 / 1000;
@@ -475,7 +475,7 @@ the requested tile based on layer, zoom, row, and column in the URL.
 sub RESTful {
     my ($self) = @_;
     my $path = $self->{env}{PATH_INFO};
-    #print STDERR "$path\n";
+    $self->log({ path => $path }) if $self->{debug};
     my ($layer) = $path =~ /^\/(\w+)/;
     return $self->tilemaps unless defined $layer;
     my $set;
@@ -553,7 +553,8 @@ sub make_tile {
             $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
                                                       '-outsize' , $tile->tile,
                                                       '-projwin', $tile->projwin] );
-            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG' });
+            my $z = $set->{zFactor} // 1;
+            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG', z => $z });
             $tile->expand(-1);
         }
         
@@ -691,7 +692,7 @@ sub log {
 }
 
 {
-    package Tile;
+    package Geo::OGC::Service::WMTS::Tile;
     sub new {
         my ($class, $extent, $parameters) = @_;
         my $self = []; # tile_width tile_height minx maxy maxx miny pixel_width pixel_height
