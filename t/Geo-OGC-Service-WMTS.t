@@ -16,12 +16,23 @@ use XML::LibXML;
 use XML::SemanticDiff;
 use XML::LibXML::PrettyPrint;
 use Plack::Builder;
+use File::Share ':all';
 BEGIN { use_ok('Geo::OGC::Service::WMTS') };
 
 #########################
 
 # Insert your test code below, the Test::More module is use()ed here so read
 # its man page ( perldoc Test::More ) for help writing this test script.
+
+{
+    my $datadir = dist_file('Geo-GDAL', 'gdal-datadir');
+    if ($datadir && open(my $fh, "<", $datadir)) {
+        $datadir = <$fh>;
+        chomp($datadir);
+        close $fh;
+        Geo::GDAL::PushFinderLocation($datadir);
+    }
+}
 
 my $pp = XML::LibXML::PrettyPrint->new(indent_string => "  ");
 
