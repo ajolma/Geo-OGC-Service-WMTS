@@ -332,7 +332,7 @@ sub WMSGetCapabilities {
 
 Serves the tile request if WMS is used.
 
-Sends the requested tile based on parameters BBOX and LAYERS.
+Sends the requested tile based on parameters BBOX, LAYERS, and SRS.
 
 The tiles should be in a tile map resource type of directory structure
 (z/y/x.png). The value of the 'path' key in the TileSet config element
@@ -342,7 +342,7 @@ should point to the directory.
 
 sub GetMap {
     my ($self) = @_;
-    for my $param (qw/bbox layers/) {
+    for my $param (qw/bbox layers srs/) {
         unless ($self->{parameters}{$param}) {
             $self->error({ exceptionCode => 'MissingParameterValue',
                            locator => uc($param) });
@@ -362,7 +362,17 @@ sub GetMap {
         return;
     }
 
-    my $projection = $projections{$set->{SRS}};
+    say STDERR "srs=$self->{parameters}{srs}";
+
+    my $projection = $projections{$self->{parameters}{srs}};
+
+    unless ($projection) {
+        my @supported = sort keys %projections;
+        return $self->error({ exceptionCode => 'InvalidParameterValue',
+                              locator => 'SRS',
+                              ExceptionText => "$self->{parameters}{srs} is not currently supported." });
+    }
+
     my @resolutions;
     my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
     for my $i (0..19) {
@@ -382,17 +392,18 @@ sub GetMap {
         }
         $i++;
     }
-    my $rows = 2**$matrix;
 
-    # from globalmaptiles.py by Klokan Petr Pridal:
-
-    my $originShift = 2 * pi * 6378137 / 2.0;
-
-    my $px = ($bbox[0] + $originShift) / $res;
-    my $py = ($bbox[1] + $originShift) / $res;
+    my $px = ($bbox[0] - $projection->{extent}{minx}) / $res;
+    my $py = ($bbox[1] - $projection->{extent}{miny}) / $res;
 
     my $col = int( POSIX::ceil( $px / $tile_width ) - 1 );
     my $row = int( POSIX::ceil( $py / $tile_height ) - 1 );
+
+    if ($self->{parameters}{srs} eq 'EPSG:3067') {
+        # I don't know why this is needed, but it is
+        $col++;
+        $row++;
+    }
 
     ($set->{ext}) = $set->{Format} =~ /(\w+)$/;
 
@@ -544,17 +555,17 @@ sub make_tile {
 
     my $projection = $projections{$set->{SRS}};
         
-    my $tile = Tile->new($projection->{extent}, $self->{parameters});
+    my $tile = Geo::OGC::Service::WMTS::Tile->new($projection->{extent}, $self->{parameters});
 
     eval {
    
         if ($set->{processing}) {
             $tile->expand(1);
-            $ds = $ds->Translate( "/vsimem/tmp.png", ['-of' => 'PNG', '-r' => 'bilinear' , 
+            $ds = $ds->Translate( "/vsimem/tmp.tiff", ['-of' => 'GTiff', '-r' => 'bilinear' , 
                                                       '-outsize' , $tile->tile,
                                                       '-projwin', $tile->projwin] );
             my $z = $set->{zFactor} // 1;
-            $ds = $ds->DEMProcessing("/vsimem/tmp2.png", $set->{processing}, undef, { of => 'PNG', z => $z });
+            $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $set->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-1);
         }
         
