@@ -186,7 +186,9 @@ sub GetCapabilities {
     $writer->close_element;
     $writer->open_element(Contents => {});
 
-    my $t_srs = Geo::OSR::SpatialReference->new(EPSG => 4326);
+    my $t_srs = $Geo::GDAL::VERSION >= 2 ? 
+        Geo::OSR::SpatialReference->new(EPSG=>4326) : 
+        Geo::OSR::SpatialReference->create(EPSG=>4326);
 
     for my $set (@{$self->{config}{TileSets}}) {
         my $projection = $projections{$set->{SRS}};
@@ -194,7 +196,9 @@ sub GetCapabilities {
         my $bb;
         if ($set->{BoundingBox}) {
             my ($epsg) = $set->{BoundingBox}{SRS} =~ /(\d+)/;
-            my $s_srs = Geo::OSR::SpatialReference->new(EPSG => $epsg);
+            my $s_srs = $Geo::GDAL::VERSION >= 2 ? 
+                Geo::OSR::SpatialReference->new(EPSG => $epsg) :
+                Geo::OSR::SpatialReference->create(EPSG => $epsg);
             my $ct = Geo::OSR::CoordinateTransformation->new($s_srs, $t_srs);
 
             my $x = $set->{BoundingBox};
@@ -546,7 +550,9 @@ sub make_tile {
         my $srs_s = $ds->SpatialReference;
         
         my ($epsg_t) = $set->{SRS} =~ /(\d+)/;
-        my $srs_t = Geo::OSR::SpatialReference->new(EPSG => $epsg_t);
+        my $srs_t = $Geo::GDAL::VERSION >= 2 ? 
+            Geo::OSR::SpatialReference->new(EPSG => $epsg_t) :
+            Geo::OSR::SpatialReference->create(EPSG => $epsg_t);
         
         if (!$srs_s->IsSame($srs_t)) {
             $ds = $ds->Warp('/vsimem/w.png', );

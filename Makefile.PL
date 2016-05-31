@@ -8,13 +8,20 @@ if ($@) {
         "$@\n".
         "###################################\n";
 } else {
-    eval { Geo::OSR::SpatialReference->new(EPSG=>2931); };
+    eval {
+        if ($Geo::GDAL::VERSION >= 2) {
+            Geo::OSR::SpatialReference->new(EPSG=>2931);
+        } else {
+            Geo::OSR::SpatialReference->create(EPSG=>2931);
+        }
+    };
     if ($@) {
         die "###################################\n".
             "Error:\n".
             "You have Geo::GDAL module, but GDAL seems not to be installed.\n".
             "This setup may work but you need to set the GDAL_DATA environment\n".
             "variable to point to the correct location.\n".
+            "$@\n".
             "###################################\n";
     }
 }
