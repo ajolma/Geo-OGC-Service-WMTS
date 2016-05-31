@@ -5,7 +5,11 @@ perl:
   - "5.10"
 
 before_install:
-  - sudo apt-get install libexpat-dev libpq-dev libgdal-perl
+  - sudo apt-get install libexpat-dev libpq-dev
+  - wget http://download.osgeo.org/gdal/2.1.0/gdal-2.1.0.tar.gz
+  - tar zxf gdal-2.1.0.tar.gz
+  - cd gdal-2.1.0
+  - ./configure; make; make install; ldconfig
 
 install:
   - cpanm -v --installdeps --notest .
