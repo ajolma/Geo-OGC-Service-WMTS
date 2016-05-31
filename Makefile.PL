@@ -1,31 +1,5 @@
 use ExtUtils::MakeMaker;
 
-eval { require Geo::GDAL; };
-if ($@) {
-    die "###################################\n".
-        "Error:\n".
-        "A required module Geo::GDAL not found.\n".
-        "$@\n".
-        "###################################\n";
-} else {
-    eval {
-        if ($Geo::GDAL::VERSION >= 2) {
-            Geo::OSR::SpatialReference->new(EPSG=>2931);
-        } else {
-            Geo::OSR::SpatialReference->create(EPSG=>2931);
-        }
-    };
-    if ($@) {
-        die "###################################\n".
-            "Error:\n".
-            "You have Geo::GDAL module, but GDAL seems not to be installed.\n".
-            "This setup may work but you need to set the GDAL_DATA environment\n".
-            "variable to point to the correct location.\n".
-            "$@\n".
-            "###################################\n";
-    }
-}
-
 WriteMakefile1(
     NAME              => 'Geo::OGC::Service::WMTS',
     VERSION_FROM      => 'lib/Geo/OGC/Service/WMTS.pm', # finds $VERSION, requires EU::MM from perl >= 5.5
