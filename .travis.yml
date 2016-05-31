@@ -11,7 +11,8 @@ before_install:
   - cd gdal-2.1.0
   - ./configure
   - make
-  - make install
+  - sudo make install
+  - sudo ldconfig
 
 install:
   - cpanm -v --installdeps --notest .
