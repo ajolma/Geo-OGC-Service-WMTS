@@ -1,5 +1,24 @@
 use ExtUtils::MakeMaker;
 
+eval { require Geo::GDAL; };
+if ($@) {
+    die "###################################\n".
+        "Error:\n".
+        "A required module Geo::GDAL not found.\n".
+        "$@\n".
+        "###################################\n";
+} else {
+    eval { Geo::OSR::SpatialReference->new(EPSG=>2931); };
+    if ($@) {
+        die "###################################\n".
+            "Error:\n".
+            "You have Geo::GDAL module, but GDAL seems not to be installed.\n".
+            "This setup may work but you need to set the GDAL_DATA environment\n".
+            "variable to point to the correct location.\n".
+            "###################################\n";
+    }
+}
+
 WriteMakefile1(
     NAME              => 'Geo::OGC::Service::WMTS',
     VERSION_FROM      => 'lib/Geo/OGC/Service/WMTS.pm', # finds $VERSION, requires EU::MM from perl >= 5.5
@@ -21,7 +40,6 @@ WriteMakefile1(
                            "XML::LibXML::PrettyPrint" => 0,
                            "Plack::Builder" => 0,
                            "Geo::OGC::Service" => 0.08,
-                           "File::Share" => 0,
     },
     ABSTRACT_FROM     => 'lib/Geo/OGC/Service/WMTS.pm', # retrieve abstract from module
     AUTHOR            => 'Ari Jolma <ari.jolma at gmail.com>',
