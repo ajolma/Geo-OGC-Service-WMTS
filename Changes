@@ -1,0 +1,4 @@
+0.02, Dec 1, 2015
+  * Rename Tile class to Geo::OGC::Service::WMTS::Tile
+
+0.01, Nov 15, 2015

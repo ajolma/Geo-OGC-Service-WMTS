@@ -538,7 +538,7 @@ sub FeatureInfo {
 sub make_tile {
     my ($self, $set) = @_;
 
-    $self->log($self->{parameters});
+    #$self->log($self->{parameters});
 
     return $self->error({ exceptionCode => 'ResourceNotFound',
                           ExceptionText => "File resources are not supported by this GDAL version." })
@@ -566,13 +566,13 @@ sub make_tile {
     eval {
    
         if ($set->{processing}) {
-            $tile->expand(1);
+            $tile->expand(2);
             $ds = $ds->Translate( "/vsimem/tmp.tiff", ['-of' => 'GTiff', '-r' => 'bilinear' , 
                                                       '-outsize' , $tile->tile,
                                                       '-projwin', $tile->projwin] );
             my $z = $set->{zFactor} // 1;
             $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $set->{processing}, undef, { of => 'GTiff', z => $z });
-            $tile->expand(-1);
+            $tile->expand(-2);
         }
         
         my $writer = $self->{responder}->([200, [ 'Content-Type' => "image/png" ]]);
