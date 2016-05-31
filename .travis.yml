@@ -13,6 +13,7 @@ before_install:
   - make
   - sudo make install
   - sudo ldconfig
+  - cd ..
 
 install:
   - cpanm -v --installdeps --notest .
