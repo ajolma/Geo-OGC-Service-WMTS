@@ -366,8 +366,6 @@ sub GetMap {
         return;
     }
 
-    say STDERR "srs=$self->{parameters}{srs}";
-
     my $projection = $projections{$self->{parameters}{srs}};
 
     unless ($projection) {
@@ -377,31 +375,22 @@ sub GetMap {
                               ExceptionText => "$self->{parameters}{srs} is not currently supported." });
     }
 
-    my @resolutions;
     my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
-    for my $i (0..19) {
-        $resolutions[$i] = $extent_width/(2**$i * $tile_width);
+    my $extent_height = $projection->{extent}{maxy} - $projection->{extent}{miny};
+    my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
+    my $width = $bbox[2] - $bbox[0];
+    my $height = $bbox[3] - $bbox[1];
+    my $matrix = 0;
+    my $two_to_matrix = 1;
+    while (abs($two_to_matrix * $width - $extent_width) > 10) {
+        ++$matrix;
+        $two_to_matrix *= 2;
     }
     
-    my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
-    my $units_per_pixel = ($bbox[2]-$bbox[0])/$tile_width;
-    my $matrix;
-    my $res;
-    my $i = 0;
-    for my $r (@resolutions) {
-        if (abs($r - $units_per_pixel) < 0.1) {
-            $res = $r;
-            $matrix = $i;
-            last;
-        }
-        $i++;
-    }
-
-    my $px = ($bbox[0] - $projection->{extent}{minx}) / $res;
-    my $py = ($bbox[1] - $projection->{extent}{miny}) / $res;
-
-    my $col = int( POSIX::ceil( $px / $tile_width ) - 1 );
-    my $row = int( POSIX::ceil( $py / $tile_height ) - 1 );
+    my $col = $two_to_matrix * ($bbox[0] - $projection->{extent}{minx}) / $extent_width;
+    $col = int( POSIX::ceil($col) - 1);
+    my $row = $two_to_matrix * ($projection->{extent}{maxy} - $bbox[3]) / $extent_height;
+    $row = int( POSIX::ceil($row) - 1);
 
     if ($self->{parameters}{srs} eq 'EPSG:3067') {
         # I don't know why this is needed, but it is
@@ -413,11 +402,12 @@ sub GetMap {
 
     if ($set->{file}) {
         $self->{parameters}{tilematrix} = $matrix;
-        $self->{parameters}{tilecol} = $row;
-        $self->{parameters}{tilerow} = 2**$matrix-($col+1);
+        $self->{parameters}{tilecol} = $col;
+        $self->{parameters}{tilerow} = $row;
         return $self->make_tile($set);
     }
 
+    $row = $two_to_matrix - $row - 1;
     return $self->tile("$set->{path}/$matrix/$col/$row.$set->{ext}", $set->{Format});
 }
 
@@ -573,6 +563,8 @@ sub make_tile {
             my $z = $set->{zFactor} // 1;
             $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $set->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-2);
+        } elsif ($self->{processor}) {
+            $ds = $self->{processor}->process($ds, $tile);
         }
         
         my $writer = $self->{responder}->([200, [ 'Content-Type' => "image/png" ]]);
