@@ -1,4 +1,4 @@
-Geo-OGC-Service-WMTS version 0.01
+Geo-OGC-Service-WMTS version 0.03
 ================================
 
 A web map tile service.
