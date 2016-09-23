@@ -564,10 +564,17 @@ sub make_tile {
             $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $set->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-2);
         } elsif ($self->{processor}) {
-            $ds = $self->{processor}->process($ds, $tile);
+            $ds = $self->{processor}->process($ds, $tile, $self->{parameters});
+        }
+
+        my @headers = ('Content-Type' => "image/png");
+        if ($set->{'no-cache'}) {
+            push @headers, ('Cache-Control' => 'no-cache, no-store, must-revalidate');
+            push @headers, ('Pragma' => 'no-cache');
+            push @headers, ('Expires' => 0);
         }
         
-        my $writer = $self->{responder}->([200, [ 'Content-Type' => "image/png" ]]);
+        my $writer = $self->{responder}->([200, \@headers]);
             
         $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
                                  '-outsize' , $tile->tile,
