@@ -440,6 +440,18 @@ sub GetTile {
                               locator => $param }) unless $self->{parameters}{$param};
     }
     ($self->{parameters}{ext}) = $self->{parameters}{format} =~ /(\w+)$/;
+
+    if ($self->{config}->{serve_arbitrary_layers}) {
+        # SRS from tilematrixset
+        for my $srs (keys %projections) {
+            if ($projections{$srs}{identifier} eq $self->{parameters}{tilematrixset}) {
+                return $self->make_tile({SRS => $srs}); # no file
+            }
+        }
+        return $self->error({ exceptionCode => 'UnknownParameterValue',
+                              locator => 'tilematrixset' });
+    }
+
     my $set;
     for my $s (@{$self->{config}{TileSets}}) {
         if ($s->{Layers} eq $self->{parameters}{layer}) {
@@ -534,7 +546,8 @@ sub make_tile {
                           ExceptionText => "File resources are not supported by this GDAL version." })
         unless Geo::GDAL::Dataset->can('Translate');
         
-    my $ds = Geo::GDAL::Open($set->{file});
+    my $ds;
+    $ds = Geo::GDAL::Open($set->{file}) if $set->{file};
 
     if (0) {
         my $srs_s = $ds->SpatialReference;
@@ -586,9 +599,9 @@ sub make_tile {
         
     if ($@) {
         my $err = Geo::GDAL::error();
-        say STDERR $err;
+        say STDERR "$@\n$err";
         return $self->error({ exceptionCode => 'ResourceNotFound',
-                              ExceptionText => $err });
+                              ExceptionText => 'Internal error' });
     }
         
     return undef;
