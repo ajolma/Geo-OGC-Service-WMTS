@@ -375,6 +375,9 @@ sub GetMap {
                               ExceptionText => "$self->{parameters}{srs} is not currently supported." });
     }
 
+    # the assumption is that bbox defines a tile and we need to find the tile
+    # if the bbox does not define a tile, then we fail because this is not a WMS
+    # the bbox does not define a tile if we do not find a matching matrix
     my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
     my $extent_height = $projection->{extent}{maxy} - $projection->{extent}{miny};
     my @bbox = split /,/, $self->{parameters}{bbox}; # minx, miny, maxx, maxy
@@ -382,10 +385,13 @@ sub GetMap {
     my $height = $bbox[3] - $bbox[1];
     my $matrix = 0;
     my $two_to_matrix = 1;
-    while (abs($two_to_matrix * $width - $extent_width) > 10) {
+    while (abs($two_to_matrix * $width - $extent_width) > 10 && $matrix < 30) {
         ++$matrix;
         $two_to_matrix *= 2;
     }
+    return $self->error({ exceptionCode => 'InvalidParameterValue',
+                          locator => 'BBOX',
+                          ExceptionText => "This is a tile service. The BBOX must define a tile." }) if $matrix >= 30;
     
     my $col = $two_to_matrix * ($bbox[0] - $projection->{extent}{minx}) / $extent_width;
     $col = int( POSIX::ceil($col) - 1);
