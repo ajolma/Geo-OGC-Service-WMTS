@@ -394,15 +394,9 @@ sub GetMap {
                           ExceptionText => "This is a tile service. The BBOX must define a tile." }) if $matrix >= 30;
     
     my $col = $two_to_matrix * ($bbox[0] - $projection->{extent}{minx}) / $extent_width;
-    $col = int( POSIX::ceil($col) - 1);
+    $col = int( POSIX::floor($col) + 0.5);
     my $row = $two_to_matrix * ($projection->{extent}{maxy} - $bbox[3]) / $extent_height;
-    $row = int( POSIX::ceil($row) - 1);
-
-    if ($self->{parameters}{srs} eq 'EPSG:3067') {
-        # I don't know why this is needed, but it is
-        $col++;
-        $row++;
-    }
+    $row = int( POSIX::floor($row) + 0.5);
 
     ($set->{ext}) = $set->{Format} =~ /(\w+)$/;
 
@@ -448,35 +442,37 @@ sub GetTile {
     ($self->{parameters}{ext}) = $self->{parameters}{format} =~ /(\w+)$/;
 
     if ($self->{config}->{serve_arbitrary_layers}) {
+        my %layer = %{$self->{config}->{layer}};
         # SRS from tilematrixset
         for my $srs (keys %projections) {
             if ($projections{$srs}{identifier} eq $self->{parameters}{tilematrixset}) {
-                return $self->make_tile({SRS => $srs}); # no file
+                $layer{SRS} = $srs;
+                return $self->make_tile(\%layer);
             }
         }
         return $self->error({ exceptionCode => 'UnknownParameterValue',
                               locator => 'tilematrixset' });
     }
 
-    my $set;
+    my $layer;
     for my $s (@{$self->{config}{TileSets}}) {
         if ($s->{Layers} eq $self->{parameters}{layer}) {
-            $set = $s;
+            $layer = $s;
             last;
         }
     }
     return $self->error({ exceptionCode => 'InvalidParameterValue',
-                          locator => 'layer' }) unless defined $set;
+                          locator => 'layer' }) unless defined $layer;
 
-    ($set->{ext}) = $set->{Format} =~ /(\w+)$/;
+    ($layer->{ext}) = $layer->{Format} =~ /(\w+)$/;
 
-    return $self->make_tile($set) if $set->{file};
+    return $self->make_tile($layer) if $layer->{file};
     
     my $matrix = $self->{parameters}{tilematrix};
     my $col = $self->{parameters}{tilecol};
     my $row = 2**$matrix - ($self->{parameters}{tilerow} + 1);
-    my $ext = $self->{parameters}{ext} // $set->{ext};
-    return $self->tile("$set->{path}/$matrix/$col/$row.$ext", $set->{Format});
+    my $ext = $self->{parameters}{ext} // $layer->{ext};
+    return $self->tile("$layer->{path}/$matrix/$col/$row.$ext", $layer->{Format});
 
 }
 
@@ -501,33 +497,33 @@ sub RESTful {
     $self->log({ path => $path }) if $self->{debug};
     my ($layer) = $path =~ /^\/(\w+)/;
     return $self->tilemaps unless defined $layer;
-    my $set;
+    my $layer;
     for my $s (@{$self->{config}{TileSets}}) {
-        $set = $s, last if $s->{Layers} eq $layer;
+        $layer = $s, last if $s->{Layers} eq $layer;
     }
     return $self->error({ exceptionCode => 'InvalidParameterValue',
-                          locator => 'layer' }) unless defined $set;
+                          locator => 'layer' }) unless defined $layer;
     $path =~ s/^\/(\w+)//;
     my ($matrix, $col, $row, $ext) = $path =~ /^\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
     unless (defined $matrix) {
         ($self->{parameters}{tilematrixset}, $matrix, $col, $row, $ext) = 
             $path =~ /^\/([\w\:]+)\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
     }
-    return $self->tilemapresource($set) unless defined $matrix;
+    return $self->tilemapresource($layer) unless defined $matrix;
 
-    if ($set->{file}) {
+    if ($layer->{file}) {
         $self->{parameters}{ext} = $ext;
         $self->{parameters}{format} = "image/$ext";
         $self->{parameters}{layer} = $layer;
         $self->{parameters}{tilematrix} = $matrix;
         $self->{parameters}{tilecol} = $col;
         $self->{parameters}{tilerow} = 2**$matrix-($row+1);
-        return $self->make_tile($set);
+        return $self->make_tile($layer);
     }
 
     $row = 2**$matrix - ($row + 1) if $self->{service} eq 'WMTS';
 
-    return $self->tile("$set->{path}/$matrix/$col/$row.$set->{ext}", $set->{Format});
+    return $self->tile("$layer->{path}/$matrix/$col/$row.$layer->{ext}", $layer->{Format});
 }
 
 =pod
@@ -544,7 +540,7 @@ sub FeatureInfo {
 }
 
 sub make_tile {
-    my ($self, $set) = @_;
+    my ($self, $layer) = @_;
 
     #$self->log($self->{parameters});
 
@@ -553,12 +549,15 @@ sub make_tile {
         unless Geo::GDAL::Dataset->can('Translate');
         
     my $ds;
-    $ds = Geo::GDAL::Open($set->{file}) if $set->{file};
+    $ds = Geo::GDAL::Open($layer->{file}) if $layer->{file};
 
     if (0) {
+        # TODO: SRS transformation 
+        # if our source data ($ds) 
+        # is not in the SRS that is requested (*should* be in $self->{parameters}{SRS})
         my $srs_s = $ds->SpatialReference;
         
-        my ($epsg_t) = $set->{SRS} =~ /(\d+)/;
+        my ($epsg_t) = $layer->{SRS} =~ /(\d+)/;
         my $srs_t = $Geo::GDAL::VERSION >= 2 ? 
             Geo::OSR::SpatialReference->new(EPSG => $epsg_t) :
             Geo::OSR::SpatialReference->create(EPSG => $epsg_t);
@@ -568,26 +567,27 @@ sub make_tile {
         }
     }
 
-    my $projection = $projections{$set->{SRS}};
+    my $projection = $projections{$layer->{SRS}};
         
     my $tile = Geo::OGC::Service::WMTS::Tile->new($projection->{extent}, $self->{parameters});
 
     eval {
    
-        if ($set->{processing}) {
+        if ($layer->{processing}) {
             $tile->expand(2);
             $ds = $ds->Translate( "/vsimem/tmp.tiff", ['-of' => 'GTiff', '-r' => 'bilinear' , 
-                                                      '-outsize' , $tile->tile,
-                                                      '-projwin', $tile->projwin] );
-            my $z = $set->{zFactor} // 1;
-            $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $set->{processing}, undef, { of => 'GTiff', z => $z });
+                                                       '-outsize' , $tile->tile,
+                                                       '-projwin', $tile->projwin,
+                                                       '-a_ullr', $tile->projwin] );
+            my $z = $layer->{zFactor} // 1;
+            $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $layer->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-2);
         } elsif ($self->{processor}) {
             $ds = $self->{processor}->process($ds, $tile, $self->{parameters});
         }
 
         my @headers = ('Content-Type' => "image/png");
-        if ($set->{'no-cache'}) {
+        if ($layer->{'no-cache'}) {
             push @headers, ('Cache-Control' => 'no-cache, no-store, must-revalidate');
             push @headers, ('Pragma' => 'no-cache');
             push @headers, ('Expires' => 0);
@@ -595,11 +595,10 @@ sub make_tile {
         
         my $writer = $self->{responder}->([200, \@headers]);
             
-        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'bilinear' , 
+        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'nearest', 
                                  '-outsize' , $tile->tile,
                                  '-projwin', $tile->projwin,
-                                 '-projwin_srs', $set->{SRS},
-                                 '-a_srs', $set->{SRS}
+                                 '-a_ullr', $tile->projwin
                        ]);
     };
         
@@ -662,10 +661,10 @@ sub tilemaps {
     $writer->open_element(TileMapService => { version => "1.0.0", 
                                               tilemapservice => "http://tms.osgeo.org/1.0.0" });
     $writer->open_element(TileMaps => {});
-    for my $set (@{$self->{config}{TileSets}}) {
-        $writer->element(TileMap => {href => $self->{config}{resource}.'/'.$set->{Layers}, 
-                                     srs => $set->{SRS}, 
-                                     title => $set->{Title}, 
+    for my $layer (@{$self->{config}{TileSets}}) {
+        $writer->element(TileMap => {href => $self->{config}{resource}.'/'.$layer->{Layers}, 
+                                     srs => $layer->{SRS}, 
+                                     title => $layer->{Title}, 
                                      profile => 'none'});
     }
     $writer->close_element;
@@ -675,23 +674,23 @@ sub tilemaps {
 }
 
 sub tilemapresource {
-    my ($self, $set) = @_;
+    my ($self, $layer) = @_;
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
     $writer->open_element(TileMap => { version => "1.0.0", 
                                        tilemapservice => "http://tms.osgeo.org/1.0.0" });
-    $writer->element(Title => $set->{Title} // $set->{Layers});
-    $writer->element(Abstract => $set->{Abstract} // '');
-    $writer->element(SRS => $set->{SRS} // 'EPSG:3857');
-    $writer->element(BoundingBox => $set->{BoundingBox});
-    $writer->element(Origin => {x => $set->{BoundingBox}{minx}, y => $set->{BoundingBox}{miny}});
-    my ($ext) = $set->{Format} =~ /(\w+)$/;
-    $writer->element(TileFormat => { width => $set->{Width} // $tile_width, 
-                                     height => $set->{Height} // $tile_height, 
-                                     'mime-type' => $set->{Format}, 
+    $writer->element(Title => $layer->{Title} // $layer->{Layers});
+    $writer->element(Abstract => $layer->{Abstract} // '');
+    $writer->element(SRS => $layer->{SRS} // 'EPSG:3857');
+    $writer->element(BoundingBox => $layer->{BoundingBox});
+    $writer->element(Origin => {x => $layer->{BoundingBox}{minx}, y => $layer->{BoundingBox}{miny}});
+    my ($ext) = $layer->{Format} =~ /(\w+)$/;
+    $writer->element(TileFormat => { width => $layer->{Width} // $tile_width, 
+                                     height => $layer->{Height} // $tile_height, 
+                                     'mime-type' => $layer->{Format}, 
                                      extension => $ext });
     my @sets;
-    my ($n, $m) = $set->{Resolutions} =~ /(\d+)\.\.(\d+)$/;
-    my $projection = $projections{$set->{SRS}};
+    my ($n, $m) = $layer->{Resolutions} =~ /(\d+)\.\.(\d+)$/;
+    my $projection = $projections{$layer->{SRS}};
     my @resolutions;
     my $extent_width = $projection->{extent}{maxx} - $projection->{extent}{minx};
     for my $i (0..19) {
