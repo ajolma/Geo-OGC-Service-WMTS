@@ -495,11 +495,11 @@ sub RESTful {
     my ($self) = @_;
     my $path = $self->{env}{PATH_INFO};
     $self->log({ path => $path }) if $self->{debug};
-    my ($layer) = $path =~ /^\/(\w+)/;
-    return $self->tilemaps unless defined $layer;
+    my ($layer_name) = $path =~ /^\/(\w+)/;
+    return $self->tilemaps unless defined $layer_name;
     my $layer;
     for my $s (@{$self->{config}{TileSets}}) {
-        $layer = $s, last if $s->{Layers} eq $layer;
+        $layer = $s, last if $s->{Layers} eq $layer_name;
     }
     return $self->error({ exceptionCode => 'InvalidParameterValue',
                           locator => 'layer' }) unless defined $layer;
@@ -514,7 +514,7 @@ sub RESTful {
     if ($layer->{file}) {
         $self->{parameters}{ext} = $ext;
         $self->{parameters}{format} = "image/$ext";
-        $self->{parameters}{layer} = $layer;
+        $self->{parameters}{layer} = $layer_name;
         $self->{parameters}{tilematrix} = $matrix;
         $self->{parameters}{tilecol} = $col;
         $self->{parameters}{tilerow} = 2**$matrix-($row+1);
