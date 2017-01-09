@@ -583,7 +583,7 @@ sub make_tile {
             $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $layer->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-2);
         } elsif ($self->{processor}) {
-            $ds = $self->{processor}->process($ds, $tile, $self->{parameters});
+            $ds = $self->{processor}->process($ds, $tile, $self);
         }
 
         my @headers = ('Content-Type' => "image/png");
