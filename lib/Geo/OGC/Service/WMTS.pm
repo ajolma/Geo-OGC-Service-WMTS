@@ -140,9 +140,9 @@ sub process_request {
         }
     }
     $self->{responder} = $responder;
-    $self->{request} = $self->{parameters}{request} // '';
+    $self->{parameters}{request} //= '';
     my $response;
-    for ($self->{request} // '') {
+    for ($self->{parameters}{request}) {
         if ($self->{service} eq 'WMS' and (/^GetCapabilities/ or /^capabilities/)) { $self->WMSGetCapabilities() }
         elsif (/^GetCapabilities/ or /^capabilities/) { $self->GetCapabilities() }
         elsif (/^GetTile/)                         { $response = $self->GetTile() }
