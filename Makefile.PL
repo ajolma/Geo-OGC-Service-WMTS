@@ -21,6 +21,7 @@ WriteMakefile1(
                            "XML::LibXML::PrettyPrint" => 0,
                            "Plack::Builder" => 0,
                            "Geo::OGC::Service" => 0.08,
+			   'File::ShareDir' => 0,
     },
     ABSTRACT_FROM     => 'lib/Geo/OGC/Service/WMTS.pm', # retrieve abstract from module
     AUTHOR            => 'Ari Jolma <ari.jolma at gmail.com>',
