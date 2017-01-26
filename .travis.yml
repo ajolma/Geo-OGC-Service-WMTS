@@ -7,7 +7,7 @@ perl:
 before_install:
   - sudo apt-get install libexpat-dev libpq-dev
   - wget https://github.com/ajolma/Geo-GDAL-2.01/archive/2.010201.tar.gz
-  - tar xf Geo-GDAL-2.01-2.010201.tar.gz
+  - tar xf 2.010201.tar.gz
   - cd Geo-GDAL-2.01-2.010201
   - perl Makefile.PL
   - make
