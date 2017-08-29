@@ -758,6 +758,7 @@ sub log {
         my ($self) = @_;
         return @{$self}[0..1];
     }
+    *size = *tile;
     sub projwin {
         my ($self) = @_;
         return @{$self}[2..5];
