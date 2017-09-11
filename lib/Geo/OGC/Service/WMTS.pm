@@ -196,7 +196,7 @@ use Geo::OGC::Service;
 use vars qw(@ISA);
 push @ISA, qw(Geo::OGC::Service::Common);
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 our $radius_of_earth_at_equator = 6378137;
 our $standard_pixel_size = 0.28 / 1000;
