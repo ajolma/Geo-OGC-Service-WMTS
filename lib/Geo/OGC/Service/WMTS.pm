@@ -102,7 +102,8 @@ are Layers, Format, Resolutions, SRS, BoundingBox, path, and ext.
 =head2 PLUGIN
 
 The plugin object can be used to modify the config object in response
-time.
+time. The plugin object can also be used to modify or create the map
+tile.
 
 A Geo::OGC::Service::WMTS object calls the plugin object's config
 method with arguments ($config, $self) before the config is used to
@@ -854,15 +855,21 @@ sub log {
 =head3 Geo::OGC::Service::WMTS::Tile
 
 A class for the dimensions of the tile to be sent to the
-client. Methods are
+client. The constructor is 
 
 =over
 
-=item Geo::OGC::Service::WMTS::Tile->new($extent, $parameters) 
+=item new($extent, $parameters) 
 
-$extent should be a reference to a hash of minx, maxx, miny, and
-maxy. $parameters should be a reference to a has of tilematrix,
-tilecol, and tilerow.
+where the $extent should be a reference to a hash of minx, maxx, miny,
+and maxy; and $parameters a reference to a hash of tilematrix, tilecol,
+and tilerow.
+
+=back
+
+and the methods are
+
+=over
 
 =item size 
 
