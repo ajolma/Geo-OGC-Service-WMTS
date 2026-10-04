@@ -8,7 +8,7 @@ WriteMakefile1(
                            "File::Basename" => 0,
                            "File::Basename" => 0,
                            "Geo::OGC::Service" => 0.08,
-                           "Geo::GDAL" => 0,
+                           "Geo::GDAL::FFI" => 0,
                            "Cwd" => 0,
                            "Math::Trig" => 0,
                            "HTTP::Date" => 0,

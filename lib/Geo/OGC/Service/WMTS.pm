@@ -7,7 +7,7 @@ Geo::OGC::Service::WMTS - Perl extension to create geospatial web map tile servi
 =head1 SYNOPSIS
 
 The process_request method of this module is called by the
-Geo::OGC::Service framework. 
+Geo::OGC::Service framework.
 
 In a psgi script write something like
 
@@ -46,38 +46,38 @@ service, and optionally posted, filter, and parameters.
 
 =over
 
-=item env 
+=item env
 
 The PSGI $env.
 
-=item request 
+=item request
 
 A Plack::Request object constructed from the $env;
 
-=item plugin 
+=item plugin
 
 The plugin object given as an argument to Geo::OGC::Service in its
 constructor as a top level attribute or as a service specific
 attribute.
 
-=item config 
+=item config
 
 The configuration for this service as constructed by the
 Geo::OGC::Service object.
 
-=item service 
+=item service
 
 The name of the requested service (WMTS, WMS, or TMS).
 
-=item posted 
+=item posted
 
 A XML::LibXML documentElement of the POSTed XML.
 
-=item filter 
+=item filter
 
 A XML::LibXML documentElement contructed from a filter GET parameter.
 
-=item parameters 
+=item parameters
 
 A hash made from Plack::Request->parameters (thus removing its multi
 value nature). The keys are all converted to lower case and the values
@@ -118,22 +118,22 @@ as argument a hash reference with the following keys:
 
 =over
 
-=item dataset 
+=item dataset
 
 The GDAL dataset of the layer, if the layer has a configuration
 parameter 'file'.
 
-=item tile 
+=item tile
 
 A Geo::OGC::Service::WMTS::Tile object made from the request. The
 extent is from projection, which is deduced from the tilematrixset
 parameter.
 
-=item service 
+=item service
 
 The Geo::OGC::Service::WMTS object.
 
-=item headers 
+=item headers
 
 Currently ['Content-Type' => "image/png"]
 
@@ -145,27 +145,27 @@ None by default. Package globals include
 
 =over
 
-=item $radius_of_earth_at_equator 
+=item $radius_of_earth_at_equator
 
 6378137
 
-=item $standard_pixel_size 
+=item $standard_pixel_size
 
 0.28/1000
 
-=item $tile_width 
+=item $tile_width
 
 256
 
-=item $tile_height 
+=item $tile_height
 
 256
 
-=item $originShift3857 
+=item $originShift3857
 
 Math::Trig::pi * $radius_of_earth_at_equator
 
-=item %projections 
+=item %projections
 
 Hash of 'EPSG:nnnn' => {identifier => x, crs => x, extent => {SRS =>
 x, minx => x, maxx => x, miny => x, maxy => x}}. Currently contains
@@ -185,7 +185,7 @@ use Carp;
 use File::Basename;
 use Modern::Perl;
 use JSON;
-use Geo::GDAL;
+use Geo::GDAL::FFI;
 use Cwd;
 use Math::Trig;
 use HTTP::Date;
@@ -210,7 +210,7 @@ our %projections = (
         identifier => 'EPSG:3857',
         crs => 'urn:ogc:def:crs:EPSG:6.3:3857',
         extent => {
-            SRS => 'EPSG:3857', 
+            SRS => 'EPSG:3857',
             minx => -1 * $originShift3857,
             miny => -1 * $originShift3857,
             maxx => $originShift3857,
@@ -219,8 +219,8 @@ our %projections = (
     'EPSG:3067' => {
         identifier => 'ETRS-TM35FIN',
         crs => 'urn:ogc:def:crs:EPSG:6.3:3067',
-        extent => { 
-            SRS => 'EPSG:3067', 
+        extent => {
+            SRS => 'EPSG:3067',
             # JHS180 liite 1:
             minx => -548576,
             miny => 6291456,
@@ -266,7 +266,7 @@ sub process_request {
         elsif (/^GetMap/)                          { $response = $self->GetMap() }
         elsif (/^FeatureInfo/)                     { $response = $self->FeatureInfo() }
         elsif (/^$/)                               { $response = $self->RESTful() }
-        else                                       { 
+        else                                       {
             $self->error({ exceptionCode => 'InvalidParameterValue',
                            locator => 'request',
                            ExceptionText => "$self->{parameters}{request} is not a known request" }) }
@@ -287,7 +287,7 @@ sub GetCapabilities {
     my $config = $self->{config};
     $config = $self->{plugin}->config($config, $self) if $self->{plugin};
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
-    $writer->open_element(Capabilities => { 
+    $writer->open_element(Capabilities => {
         version => '1.0.0',
         xmlns => "http://www.opengis.net/wmts/1.0",
         'xmlns:ows' => "http://www.opengis.net/ows/1.1",
@@ -305,9 +305,7 @@ sub GetCapabilities {
     $writer->close_element;
     $writer->open_element(Contents => {});
 
-    my $t_srs = $Geo::GDAL::VERSION >= 2 ? 
-        Geo::OSR::SpatialReference->new(EPSG=>4326) : 
-        Geo::OSR::SpatialReference->create(EPSG=>4326);
+    my $t_srs = Geo::GDAL::FFI::SpatialReference->new(EPSG=>4326);
 
     for my $set (@{$config->{TileSets}}) {
         my $projection = $projections{$set->{SRS}};
@@ -315,10 +313,8 @@ sub GetCapabilities {
         my $bb;
         if ($set->{BoundingBox}) {
             my ($epsg) = $set->{BoundingBox}{SRS} =~ /(\d+)/;
-            my $s_srs = $Geo::GDAL::VERSION >= 2 ? 
-                Geo::OSR::SpatialReference->new(EPSG => $epsg) :
-                Geo::OSR::SpatialReference->create(EPSG => $epsg);
-            my $ct = Geo::OSR::CoordinateTransformation->new($s_srs, $t_srs);
+            my $s_srs = Geo::GDAL::FFI::SpatialReference->new(EPSG => $epsg);
+            my $ct = Geo::GDAL::FFI::CoordinateTransformation->new($s_srs, $t_srs);
 
             my $x = $set->{BoundingBox};
             #$x = $projection->{extent}; not in s_srs
@@ -331,7 +327,7 @@ sub GetCapabilities {
             $bb = [ 'ows:WGS84BoundingBox' => { crs => "urn:ogc:def:crs:OGC:2:84" },
                    [ [ 'ows:LowerCorner' => "$points->[0][0] $points->[0][1]" ],
                      [ 'ows:UpperCorner' => "$points->[1][0] $points->[1][1]" ] ] ];
-            
+
         }
 
         my ($ext) = $set->{Format} =~ /(\w+)$/;
@@ -381,26 +377,26 @@ sub WMSGetCapabilities {
                          [OnlineResource => {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
                                              'xlink:href' => $config->{resource}}]]);
     $writer->open_element('Capability');
-    $writer->element(Request => 
-                     [[GetCapabilities => 
+    $writer->element(Request =>
+                     [[GetCapabilities =>
                        [[Format => 'application/vnd.ogc.wms_xml'],
-                        [DCPType => 
-                         [HTTP => 
-                          [Get => 
-                           [OnlineResource => 
+                        [DCPType =>
+                         [HTTP =>
+                          [Get =>
+                           [OnlineResource =>
                             {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
                              'xlink:href' => $config->{resource}}]]]]]],
-                      [GetMap => 
+                      [GetMap =>
                        [[Format => 'image/png'],
-                        [DCPType => 
-                         [HTTP => 
-                          [Get => 
-                           [OnlineResource => 
+                        [DCPType =>
+                         [HTTP =>
+                          [Get =>
+                           [OnlineResource =>
                             {'xmlns:xlink' => "http://www.w3.org/1999/xlink",
                              'xlink:href' => $config->{resource}}]]]]]]
                      ]);
     $writer->element(Exception => [Format => 'text/plain']);
-    
+
     for my $set (@{$config->{TileSets}}) {
         my($i0,$i1) = split /\.\./, $set->{Resolutions};
 
@@ -415,7 +411,7 @@ sub WMSGetCapabilities {
         my $bb = $set->{BoundingBox}; # with this QGIS does not show tiles at correct locations
         $bb = $projection->{extent};
 
-        $writer->element(VendorSpecificCapabilities => 
+        $writer->element(VendorSpecificCapabilities =>
                          [TileSet => [[SRS => $set->{SRS}],
                                       [BoundingBox => $bb],
                                       [Resolutions => "@resolutions"],
@@ -426,7 +422,7 @@ sub WMSGetCapabilities {
                                       [Styles => undef]]]);
     }
 
-    $writer->element(UserDefinedSymbolization => 
+    $writer->element(UserDefinedSymbolization =>
                      {SupportSLD => 0, UserLayer => 0, UserStyle => 0, RemoteWFS => 0});
 
     for my $set (@{$config->{TileSets}}) {
@@ -437,7 +433,7 @@ sub WMSGetCapabilities {
         $bb = $projection->{extent};
 
         $writer->element(Layer => [[Title => 'TileCache Layers'],
-                                   [Layer => {queryable => 0, opaque => 0, cascaded => 1}, 
+                                   [Layer => {queryable => 0, opaque => 0, cascaded => 1},
                                     [[Name => $set->{Layers}],
                                      [Title => $set->{Layers}],
                                      [SRS => $set->{SRS}],
@@ -514,7 +510,7 @@ sub GetMap {
     return $self->error({ exceptionCode => 'InvalidParameterValue',
                           locator => 'BBOX',
                           ExceptionText => "This is a tile service. The BBOX must define a tile." }) if $matrix >= 30;
-    
+
     my $col = $two_to_matrix * ($bbox[0] - $projection->{extent}{minx}) / $extent_width;
     $col = int( POSIX::floor($col) + 0.5);
     my $row = $two_to_matrix * ($projection->{extent}{maxy} - $bbox[3]) / $extent_height;
@@ -587,7 +583,7 @@ sub GetTile {
     ($layer->{ext}) = $layer->{Format} =~ /(\w+)$/;
 
     return $self->make_tile($layer) if $layer->{file};
-    
+
     my $matrix = $self->{parameters}{tilematrix};
     my $col = $self->{parameters}{tilecol};
     my $row = 2**$matrix - ($self->{parameters}{tilerow} + 1);
@@ -626,7 +622,7 @@ sub RESTful {
     $path =~ s/^\/(\w+)//;
     my ($matrix, $col, $row, $ext) = $path =~ /^\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
     unless (defined $matrix) {
-        ($self->{parameters}{tilematrixset}, $matrix, $col, $row, $ext) = 
+        ($self->{parameters}{tilematrixset}, $matrix, $col, $row, $ext) =
             $path =~ /^\/([\w\:]+)\/(\w+)\/(\w+)\/(\w+)\.(\w+)$/;
     }
     return $self->tilemapresource($layer) unless defined $matrix;
@@ -666,41 +662,37 @@ sub make_tile {
 
     return $self->error({ exceptionCode => 'ResourceNotFound',
                           ExceptionText => "File resources are not supported by this GDAL version." })
-        unless Geo::GDAL::Dataset->can('Translate');
-        
+        unless Geo::GDAL::FFI::Dataset->can('Translate');
+
     my $ds;
-    $ds = Geo::GDAL::Open($layer->{file}) if $layer->{file};
+    $ds = Geo::GDAL::FFI::Open($layer->{file}) if $layer->{file};
 
     if (0) {
-        # TODO: SRS transformation 
-        # if our source data ($ds) 
+        # TODO: SRS transformation
+        # if our source data ($ds)
         # is not in the SRS that is requested (*should* be in $self->{parameters}{SRS})
         my $srs_s = $ds->SpatialReference;
-        
+
         my ($epsg_t) = $layer->{SRS} =~ /(\d+)/;
-        my $srs_t = $Geo::GDAL::VERSION >= 2 ? 
-            Geo::OSR::SpatialReference->new(EPSG => $epsg_t) :
-            Geo::OSR::SpatialReference->create(EPSG => $epsg_t);
-        
+        my $srs_t = Geo::GDAL::FFI::SpatialReference->new(EPSG => $epsg_t);
+
         if (!$srs_s->IsSame($srs_t)) {
             $ds = $ds->Warp('/vsimem/w.png', );
         }
     }
 
     my $projection = $projections{$layer->{SRS}};
-        
+
     my $tile = Geo::OGC::Service::WMTS::Tile->new($projection->{extent}, $self->{parameters});
 
     eval {
 
-        my @headers = ('Content-Type' => "image/png");
-        
         if ($self->{plugin}) {
             $ds = $self->{plugin}->process({dataset => $ds, tile => $tile, service => $self, headers => \@headers});
-            
+
         } elsif ($layer->{processing}) {
             $tile->expand(2);
-            $ds = $ds->Translate( "/vsimem/tmp.tiff", ['-of' => 'GTiff', '-r' => 'bilinear' , 
+            $ds = $ds->Translate( "/vsimem/tmp.tiff", ['-of' => 'GTiff', '-r' => 'bilinear' ,
                                                        '-outsize' , $tile->tile,
                                                        '-projwin', $tile->projwin,
                                                        '-a_ullr', $tile->projwin] );
@@ -708,21 +700,25 @@ sub make_tile {
             $ds = $ds->DEMProcessing("/vsimem/tmp2.tiff", $layer->{processing}, undef, { of => 'GTiff', z => $z });
             $tile->expand(-2);
         }
-        
-        my $writer = $self->{responder}->([200, \@headers]);
-            
-        $ds->Translate($writer, ['-of' => 'PNG', '-r' => 'nearest', 
-                                 '-outsize' , $tile->tile,
-                                 '-projwin', $tile->projwin,
-                                 '-a_ullr', $tile->projwin
-                       ]);
+
+        my $vsifile = '/vsimem/tmp.png';
+        $ds->Translate($vsifile, [
+            '-of' => 'PNG',
+            '-r' => 'nearest',
+            '-outsize' , $tile->tile,
+            '-projwin', $tile->projwin,
+            '-a_ullr', $tile->projwin
+        ]);
+
+        my @headers = ('Content-Type' => "image/png");
+        $self->{responder}->([200, \@headers, [Geo::GDAL::FFI::VSI::File->Open($vsifile)->Read(1000000)]]);
     };
-        
+
     if ($@) {
         # subsystems should use newline in error messages
         # so we can report the error location to stderr but not to the client
         print STDERR $@;
-        my $gdal_error = Geo::GDAL->errstr;
+        my $gdal_error = Geo::GDAL::FFI->errstr;
         say STDERR $gdal_error if $gdal_error;
         my @error = split /\n/, $@;
         while (@error && $error[$#error] =~ /^\s/) {
@@ -731,7 +727,7 @@ sub make_tile {
         return $self->error({ exceptionCode => 'ResourceNotFound',
                               ExceptionText => join("\n", @error) });
     }
-        
+
     return undef;
 }
 
@@ -763,11 +759,11 @@ sub tile_matrix_set {
     for my $tile_matrix (@$tile_matrix_set) {
         my $matrix_width = 2**$tile_matrix;
         my $matrix_height = 2**$tile_matrix;
-        $writer->element(TileMatrix => 
+        $writer->element(TileMatrix =>
                          [ [ 'ows:Identifier' => $tile_matrix ],
-                           [ ScaleDenominator => 
-                             $extent_width / 
-                             ($matrix_width * $tile_width) / 
+                           [ ScaleDenominator =>
+                             $extent_width /
+                             ($matrix_width * $tile_width) /
                              $standard_pixel_size ],
                            [ TopLeftCorner => $projection->{extent}{minx}.' '.$projection->{extent}{maxy} ],
                            [ TileWidth => $tile_width ],
@@ -783,13 +779,13 @@ sub tilemaps {
     my $config = $self->{config};
     $config = $self->{plugin}->config($config, $self) if $self->{plugin};
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
-    $writer->open_element(TileMapService => { version => "1.0.0", 
+    $writer->open_element(TileMapService => { version => "1.0.0",
                                               tilemapservice => "http://tms.osgeo.org/1.0.0" });
     $writer->open_element(TileMaps => {});
     for my $layer (@{$config->{TileSets}}) {
-        $writer->element(TileMap => {href => $config->{resource}.'/'.$layer->{Layers}, 
-                                     srs => $layer->{SRS}, 
-                                     title => $layer->{Title}, 
+        $writer->element(TileMap => {href => $config->{resource}.'/'.$layer->{Layers},
+                                     srs => $layer->{SRS},
+                                     title => $layer->{Title},
                                      profile => 'none'});
     }
     $writer->close_element;
@@ -801,7 +797,7 @@ sub tilemaps {
 sub tilemapresource {
     my ($self, $layer) = @_;
     my $writer = Geo::OGC::Service::XMLWriter::Caching->new();
-    $writer->open_element(TileMap => { version => "1.0.0", 
+    $writer->open_element(TileMap => { version => "1.0.0",
                                        tilemapservice => "http://tms.osgeo.org/1.0.0" });
     $writer->element(Title => $layer->{Title} // $layer->{Layers});
     $writer->element(Abstract => $layer->{Abstract} // '');
@@ -809,9 +805,9 @@ sub tilemapresource {
     $writer->element(BoundingBox => $layer->{BoundingBox});
     $writer->element(Origin => {x => $layer->{BoundingBox}{minx}, y => $layer->{BoundingBox}{miny}});
     my ($ext) = $layer->{Format} =~ /(\w+)$/;
-    $writer->element(TileFormat => { width => $layer->{Width} // $tile_width, 
-                                     height => $layer->{Height} // $tile_height, 
-                                     'mime-type' => $layer->{Format}, 
+    $writer->element(TileFormat => { width => $layer->{Width} // $tile_width,
+                                     height => $layer->{Height} // $tile_height,
+                                     'mime-type' => $layer->{Format},
                                      extension => $ext });
     my @sets;
     my ($n, $m) = $layer->{Resolutions} =~ /(\d+)\.\.(\d+)$/;
@@ -855,15 +851,15 @@ sub log {
 =head3 Geo::OGC::Service::WMTS::Tile
 
 A class for the dimensions of the tile to be sent to the
-client. The constructor is 
+client. Methods are
 
 =over
 
-=item new($extent, $parameters) 
+=item Geo::OGC::Service::WMTS::Tile->new($extent, $parameters)
 
 where the $extent should be a reference to a hash of minx, maxx, miny,
-and maxy; and $parameters a reference to a hash of tilematrix, tilecol,
-and tilerow.
+and maxy; and $parameters should be a reference to a hash of
+tilematrix, tilecol, and tilerow.
 
 =back
 
@@ -871,20 +867,20 @@ and the methods are
 
 =over
 
-=item size 
+=item size
 
 The width and height of the tile in pixels. These come originally from
 the Geo::OGC::Service::WMTS globals.
 
-=item projwin 
+=item projwin
 
 An array (minx maxy maxx miny).
 
-=item extent 
+=item extent
 
-A Geo::GDAL::Extent object of the tile extent.
+A Geo::GDAL::FFI::Extent object of the tile extent.
 
-=item expand($pixels) 
+=item expand($pixels)
 
 Expand (or shrink) the tile $pixels pixels. Useful for some processing
 tasks.
@@ -925,7 +921,7 @@ tasks.
     }
     sub extent {
         my ($self) = @_;
-        return Geo::GDAL::Extent->new($self->[2], $self->[5], $self->[4], $self->[3]);
+        return Geo::GDAL::FFI::Extent->new($self->[2], $self->[5], $self->[4], $self->[3]);
     }
     sub expand {
         my ($self, $pixels) = @_;
@@ -933,7 +929,7 @@ tasks.
         $self->[1] += 2*$pixels;
         $self->[2] -= $self->[6]*$pixels;
         $self->[3] += $self->[7]*$pixels;
-        $self->[4] += $self->[6]*$pixels; 
+        $self->[4] += $self->[6]*$pixels;
         $self->[5] -= $self->[7]*$pixels;
     }
 }
@@ -957,7 +953,7 @@ Discuss this module on the Geo-perl email list.
 
 L<https://list.hut.fi/mailman/listinfo/geo-perl>
 
-For the WMTS standard see 
+For the WMTS standard see
 
 L<http://www.opengeospatial.org/standards/wmts>
 
