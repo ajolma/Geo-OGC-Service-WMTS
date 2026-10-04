@@ -687,6 +687,8 @@ sub make_tile {
 
     eval {
 
+        my @headers = ('Content-Type' => "image/png");
+
         if ($self->{plugin}) {
             $ds = $self->{plugin}->process({dataset => $ds, tile => $tile, service => $self, headers => \@headers});
 
@@ -710,7 +712,6 @@ sub make_tile {
             '-a_ullr', $tile->projwin
         ]);
 
-        my @headers = ('Content-Type' => "image/png");
         $self->{responder}->([200, \@headers, [Geo::GDAL::FFI::VSI::File->Open($vsifile)->Read(1000000)]]);
     };
 
